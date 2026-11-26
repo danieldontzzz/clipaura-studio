@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101114"><title>ClipAura Studio</title>
+<link rel="manifest" href="/manifest.json">
+<style>
+:root{color-scheme:dark;--bg:#101114;--panel:#191b21;--line:#2a2d36;--muted:#9da3b2;--accent:#b6f36b;--white:#f5f6f8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--white);font:15px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}
+header{padding:22px max(18px,env(safe-area-inset-left));border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#101114ee;backdrop-filter:blur(16px);z-index:2}
+.logo{font-weight:900;letter-spacing:.08em}.logo span{color:var(--accent)}.pill{font-size:11px;border:1px solid #46513c;color:var(--accent);padding:5px 9px;border-radius:20px}
+main{max-width:1050px;margin:auto;padding:22px 16px 70px}.hero{padding:22px 0 18px}.eyebrow{color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.16em}.hero h1{font-size:clamp(28px,7vw,46px);margin:9px 0}.hero p,.muted{color:var(--muted);line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:18px 0}.stat,.panel,.clip{background:var(--panel);border:1px solid var(--line);border-radius:16px}.stat{padding:14px}.stat b{display:block;font-size:24px}.stat small{color:var(--muted)}
+.tabs{display:flex;gap:8px;overflow:auto;margin:22px 0}.tab,button{border:1px solid var(--line);background:#22252d;color:var(--white);padding:11px 14px;border-radius:11px;font-weight:700;cursor:pointer;white-space:nowrap}.tab.active,button.primary{background:var(--accent);color:#111;border-color:var(--accent)}
+.panel{padding:17px;margin:12px 0}.panel h2{margin:0 0 14px;font-size:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+label{display:block;color:var(--muted);font-size:12px;margin:12px 0 6px}input,textarea,select{width:100%;background:#101217;border:1px solid var(--line);border-radius:10px;color:var(--white);padding:12px;font:inherit}textarea{min-height:70px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.actions button{flex:1}
+.item{padding:14px;border:1px solid var(--line);border-radius:13px;margin:10px 0;background:#14161b}.itemhead{display:flex;justify-content:space-between;gap:12px}.score{color:var(--accent);font-weight:900}.status{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.hidden{display:none!important}.note{border-left:3px solid var(--accent);padding:10px 12px;background:#1b2117;color:#dce8d0;border-radius:5px;font-size:13px;line-height:1.5}
+footer{text-align:center;color:#737987;font-size:11px;padding:25px}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.stats{gap:7px}.stat{padding:11px}.stat b{font-size:20px}}
+</style>
+</head>
+<body>
+<header><div class="logo">CLIP<span>AURA</span> STUDIO</div><div class="pill">V1 · APPROVAL MODE</div></header>
+<main>
+<section class="hero"><div class="eyebrow">YOUR CLIPPING WORKFLOW, ONE PLACE</div><h1>Find the moment.<br><span style="color:var(--accent)">Make it hit.</span></h1><p>Queue VODs, review candidate clips, approve the best moments and prepare vertical exports for CapCut.</p></section>
+<div class="stats">
+ <div class="stat"><b id="jobCount">0</b><small>VOD jobs</small></div>
+ <div class="stat"><b id="reviewCount">0</b><small>Awaiting approval</small></div>
+ <div class="stat"><b id="exportCount">0</b><small>Rendered exports</small></div>
+</div>
+<div class="tabs">
+ <button class="tab active" data-tab="queue">VOD queue</button><button class="tab" data-tab="review">Clip approval</button><button class="tab" data-tab="exports">CapCut exports</button>
+</div>
+<section id="queue">
+ <div class="panel"><h2>＋ Add a creator VOD</h2>
+ <form id="jobForm">
+ <div class="grid"><div><label>CREATOR</label><input name="creator" placeholder="CaseOh, xQc, Stable Ronaldo…" required></div><div><label>VOD LINK</label><input name="vod_url" type="url" placeholder="https://…" required></div></div>
+ <label>NOTES / MOMENT TYPE</label><textarea name="notes" placeholder="Funny reactions, rage moments, unexpected fails…"></textarea>
+ <div class="actions"><button class="primary" type="submit">Add to queue</button></div></form></div>
+ <div class="panel"><h2>Submission workflow</h2><div class="note">1. Add a VOD. 2. Open Clips.gg and submit the link or source file. 3. When Clips.gg finishes, return here and add its candidate clips. This V1 does not automate or scrape the Clips.gg website.</div><div class="actions"><button class="primary" id="openClips">Open Clips.gg</button></div></div>
+ <div class="panel"><h2>Queued VODs</h2><div id="jobsList" class="muted">Loading…</div></div>
+</section>
+<section id="review" class="hidden"><div class="panel"><h2>Candidate clips</h2><p class="muted">Add candidates from Clips.gg. Approve only the moments worth editing.</p>
+ <form id="clipForm"><label>VOD JOB</label><select name="job_id" id="jobSelect" required></select>
+ <div class="grid"><div><label>CLIP TITLE</label><input name="title" placeholder="The funniest reaction…"></div><div><label>VIRALITY SCORE (0–100)</label><input name="score" type="number" min="0" max="100" value="75"></div></div>
+ <div class="grid"><div><label>CLIPS.GG CLIP URL (OPTIONAL)</label><input name="source_url" type="url" placeholder="https://…"></div><div><label>DURATION IN SECONDS</label><input name="duration" type="number" min="0" step=".1" value="18"></div></div>
+ <div class="actions"><button class="primary" type="submit">Add candidate</button></div></form><div id="clipsList"></div></div></section>
+<section id="exports" class="hidden"><div class="panel"><h2>CapCut-ready exports</h2><p class="muted">Rendered MP4 files appear here after an approved candidate has been uploaded and processed.</p><div id="exportsList"></div></div></section>
+<footer>CLIPAURA STUDIO · V1 · Built for a human-in-the-loop workflow</footer>
+</main>
+<script>
+const $=s=>document.querySelector(s);let jobs=[],clips=[];
+async function api(path,opts={}){const r=await fetch(path,opts);let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail||'Request failed');return d}
+function formData(form){return new FormData(form)}
+function esc(s=''){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function switchTab(tab){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));['queue','review','exports'].forEach(x=>$('#'+x).classList.toggle('hidden',x!==tab));if(tab==='review')loadClips();if(tab==='exports')loadClips()}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
+async function loadJobs(){jobs=await api('/api/jobs');$('#jobCount').textContent=jobs.length;$('#jobsList').innerHTML=jobs.length?jobs.map(j=>`<div class="item"><div class="itemhead"><b>${esc(j.creator)}</b><span class="status">${esc(j.status.replaceAll('_',' '))}</span></div><p class="muted">${esc(j.vod_url)}</p><div class="actions"><button onclick="copyText('${esc(j.vod_url)}')">Copy VOD link</button><button onclick="submitJob('${j.id}')">Mark submitted</button><button class="primary" onclick="openForJob('${j.id}')">Open Clips.gg</button></div></div>`).join(''):'No VODs queued yet.';$('#jobSelect').innerHTML=jobs.map(j=>`<option value="${j.id}">${esc(j.creator)} · ${esc(j.status)}</option>`).join('')}
+async function loadClips(){clips=await api('/api/clips');$('#reviewCount').textContent=clips.filter(c=>c.status==='pending_review').length;$('#exportCount').textContent=clips.filter(c=>c.status==='rendered').length;
+$('#clipsList').innerHTML=clips.filter(c=>c.status!=='rendered').map(c=>`<div class="item"><div class="itemhead"><b>${esc(c.title||'Untitled candidate')}</b><span class="score">${c.score}/100</span></div><p class="muted">${esc(c.creator)} · ${c.duration}s · <span class="status">${esc(c.status)}</span></p>${c.source_url?`<a style="color:var(--accent)" href="${esc(c.source_url)}" target="_blank">Open source clip</a>`:''}<label>UPLOAD CLIP FILE</label><input type="file" accept="video/*" id="file-${c.id}"><div class="actions"><button class="primary" onclick="approve('${c.id}')">Approve</button><button onclick="uploadClip('${c.id}')">Upload file</button><button onclick="reject('${c.id}')">Reject</button></div><div class="grid"><div><label>START (SECONDS)</label><input id="start-${c.id}" type="number" value="0" min="0"></div><div><label>END (SECONDS)</label><input id="end-${c.id}" type="number" value="${Math.max(1,Math.min(18,c.duration||18))}" min="1"></div></div><div class="actions"><button onclick="render('${c.id}')">Render vertical MP4</button></div></div>`).join('')||'No candidates yet.';
+$('#exportsList').innerHTML=clips.filter(c=>c.status==='rendered'&&c.export_path).map(c=>`<div class="item"><b>${esc(c.title||'ClipAura export')}</b><p class="muted">${esc(c.creator)}</p><a style="color:var(--accent)" href="/api/exports/${encodeURIComponent(c.export_path.split('/').pop())}">Download MP4</a></div>`).join('')||'No exports yet.'}
+$('#jobForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/jobs',{method:'POST',body:formData(e.target)});e.target.reset();await loadJobs();alert('VOD added to queue.')}catch(err){alert(err.message)}};
+$('#clipForm').onsubmit=async e=>{e.preventDefault();const fd=formData(e.target),jid=fd.get('job_id');if(!jid)return alert('Add a VOD job first.');try{await api(`/api/jobs/${jid}/clips`,{method:'POST',body:fd});e.target.reset();await loadClips();alert('Candidate added for your approval.')}catch(err){alert(err.message)}};
+async function submitJob(id){try{await api(`/api/jobs/${id}/submitted`,{method:'POST'});await loadJobs()}catch(e){alert(e.message)}}
+function copyText(t){navigator.clipboard?.writeText(t).then(()=>alert('Copied VOD link')).catch(()=>prompt('Copy this link:',t))}
+function openForJob(id){const j=jobs.find(x=>x.id===id);if(j){copyText(j.vod_url);window.open('https://livestream.clips.gg/','_blank')}}
+$('#openClips').onclick=()=>window.open('https://livestream.clips.gg/','_blank');
+async function approve(id){try{await api(`/api/clips/${id}/approve`,{method:'POST'});await loadClips()}catch(e){alert(e.message)}}
+async function reject(id){try{await api(`/api/clips/${id}/reject`,{method:'POST'});await loadClips()}catch(e){alert(e.message)}}
+async function uploadClip(id){const f=$(`#file-${id}`).files[0];if(!f)return alert('Choose a video file first.');const fd=new FormData();fd.append('video',f);try{await api(`/api/clips/${id}/upload`,{method:'POST',body:fd});alert('Clip uploaded.');}catch(e){alert(e.message)}}
+async function render(id){const fd=new FormData();fd.append('start',$(`#start-${id}`).value);fd.append('end',$(`#end-${id}`).value);try{const d=await api(`/api/clips/${id}/render`,{method:'POST',body:fd});await loadClips();alert('Render complete. Your MP4 is in CapCut exports.')}catch(e){alert(e.message)}}
+loadJobs().then(loadClips).catch(e=>alert('Could not connect to ClipAura backend: '+e.message));
+</script>
+</body></html>
