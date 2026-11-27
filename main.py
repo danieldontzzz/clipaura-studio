@@ -212,9 +212,7 @@ def download_vod(job_id: str):
         return {
             "ok": True,
             "status": "vod_downloaded",
-            "filename": Path(existing).name
-        }
-
+    
     output_template = str(UPLOADS / f"{job_id}_vod.%(ext)s")
     temp_dir = UPLOADS / f"{job_id}_temp"
 
@@ -226,7 +224,7 @@ def download_vod(job_id: str):
         if old.is_file():
             old.unlink(missing_ok=True)
 
-        is_youtube = (
+    is_youtube = (
         host == "youtube.com"
         or host.endswith(".youtube.com")
         or host == "youtu.be"
@@ -234,7 +232,7 @@ def download_vod(job_id: str):
 
     cookie_path = DATA / "youtube_cookies.txt"
 
-        command = [
+    command = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
         "--js-runtimes", "deno",
@@ -253,6 +251,13 @@ def download_vod(job_id: str):
     if is_youtube:
         if not cookie_path.is_file():
             raise HTTPException(
+                400,
+                "YouTube cookies have not been uploaded yet"
+            )
+        command.extend(["--cookies", str(cookie_path)])
+
+    command.append(job["vod_url"])
+
                 400,
                 "YouTube cookies have not been uploaded yet"
             )
