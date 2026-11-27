@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import sqlite3
 import subprocess
 import sys
+import shutil
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
@@ -21,7 +22,7 @@ for folder in (DATA, UPLOADS, EXPORTS):
 
 DB = DATA / "clipaura.sqlite3"
 
-app = FastAPI(title="ClipAura Studio", version="2.0.0")
+app = FastAPI(title="ClipAura Studio", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,7 +68,9 @@ def init_db():
 
         columns = [
             row["name"]
-            for row in c.execute("PRAGMA table_info(jobs)").fetchall()
+            for row in c.execute(
+                "PRAGMA table_info(jobs)"
+            ).fetchall()
         ]
 
         if "vod_path" not in columns:
@@ -84,7 +87,7 @@ def health():
     return {
         "ok": True,
         "app": "ClipAura Studio",
-        "version": "2.0.0"
+        "version": "2.1.0"
     }
 
 
@@ -183,21 +186,58 @@ def download_vod(job_id: str):
             "Use a supported HTTPS Twitch, YouTube or Kick VOD link"
         )
 
+    # Return an existing successful download instead of downloading again.
+    existing_path = job["vod_path"] or ""
+
+    if existing_path and Path(existing_path).is_file():
+        return {
+            "ok": True,
+            "status": "vod_downloaded",
+            "filename": Path(existing_path).name
+        }
+
     output_template = str(UPLOADS / f"{job_id}_vod.%(ext)s")
 
+    # Give each download its own temporary directory.
+    temp_dir = UPLOADS / f"{job_id}_temp"
+
+    # Remove stale temporary files from a previous failed attempt.
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Remove incomplete output files from an earlier attempt.
+    for old_file in UPLOADS.glob(f"{job_id}_vod.*"):
+        if old_file.is_file():
+            old_file.unlink(missing_ok=True)
+
+    # Do not force "-f best". yt-dlp chooses the best available
+    # Twitch formats and merges them using FFmpeg.
     command = [
         sys.executable,
         "-m",
         "yt_dlp",
+
         "--no-playlist",
-        "--max-filesize",
-        "4G",
-        "--merge-output-format",
-        "mp4",
-        "-f",
-        "best",
-        "-o",
-        output_template,
+        "--max-filesize", "4G",
+
+        "--merge-output-format", "mp4",
+
+        # Twitch fragment reliability settings.
+        "--concurrent-fragments", "1",
+        "--fragment-retries", "20",
+        "--retries", "10",
+        "--file-access-retries", "10",
+        "--retry-sleep", "fragment:exp=1:20",
+
+        # Avoid resuming broken partial fragment downloads.
+        "--no-continue",
+
+        # Keep temporary fragments separate from final output.
+        "--paths", f"temp:{temp_dir}",
+
+        "-o", output_template,
         job["vod_url"]
     ]
 
@@ -206,30 +246,53 @@ def download_vod(job_id: str):
             command,
             capture_output=True,
             text=True,
-            timeout=1800
+            timeout=3600
         )
+
     except subprocess.TimeoutExpired:
-        raise HTTPException(504, "VOD download timed out")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(
+            504,
+            "Twitch VOD download timed out after 60 minutes"
+        )
+
+    except FileNotFoundError:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(
+            503,
+            "Python or yt-dlp could not be started"
+        )
 
     if result.returncode != 0:
+        error_text = (result.stderr or result.stdout or "Unknown download error")
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
         raise HTTPException(
             500,
-            "VOD download failed: " + result.stderr[-1000:]
+            "VOD download failed: " + error_text[-2000:]
         )
 
     downloaded = [
         path for path in UPLOADS.glob(f"{job_id}_vod.*")
         if path.is_file()
-        and path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}
+        and path.suffix.lower() in {
+            ".mp4", ".mkv", ".webm", ".mov"
+        }
     ]
 
     if not downloaded:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
         raise HTTPException(
             500,
             "Download completed but no video file was found"
         )
 
     vod_path = str(downloaded[0])
+
+    # Remove temporary fragments after a successful download.
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
     with conn() as c:
         c.execute(
@@ -435,11 +498,13 @@ def render_clip(
             text=True,
             timeout=900
         )
+
     except FileNotFoundError:
         raise HTTPException(
             503,
             "FFmpeg is not installed on this server"
         )
+
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "Render timed out")
 
