@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -8,98 +7,62 @@
 <title>ClipAuraVault Studio</title>
 <link rel="manifest" href="/manifest.json">
 <style>
-:root {
-  color-scheme:dark;
-  --bg:#090611;--panel:#120d20;--line:#302047;
-  --purple:#a855f7;--neon:#c084fc;--pink:#e879f9;
-  --text:#faf7ff;--muted:#a99bbd;--green:#a3e635;--red:#fb7185;
-}
+:root{color-scheme:dark;--bg:#090611;--panel:#120d20;--line:#302047;--purple:#a855f7;--neon:#c084fc;--pink:#e879f9;--text:#faf7ff;--muted:#a99bbd;--green:#a3e635;--red:#fb7185}
 *{box-sizing:border-box}
-body{
- margin:0;background:radial-gradient(ellipse at 50% -20%,#35105b 0%,transparent 55%),var(--bg);
- color:var(--text);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif
-}
-header{
- padding:17px max(18px,env(safe-area-inset-left));
- border-bottom:1px solid var(--line);display:flex;justify-content:space-between;
- align-items:center;position:sticky;top:0;z-index:5;background:#090611ed;
- backdrop-filter:blur(18px)
-}
+body{margin:0;background:radial-gradient(ellipse at 50% -20%,#35105b 0%,transparent 55%),var(--bg);color:var(--text);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:17px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:5;background:#090611ed;backdrop-filter:blur(18px)}
 .brand{display:flex;align-items:center;gap:11px}
-.mark{
- width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
- background:linear-gradient(145deg,#c084fc,#7e22ce);
- box-shadow:0 0 22px #a855f755;font-weight:1000;font-size:19px;color:white
-}
-.logo{font-weight:950;letter-spacing:.04em;font-size:17px}
-.logo span{color:var(--neon)}
+.mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(145deg,#c084fc,#7e22ce);font-weight:1000;font-size:19px}
+.logo{font-weight:950;letter-spacing:.04em;font-size:17px}.logo span{color:var(--neon)}
 .subbrand{font-size:9px;color:var(--muted);letter-spacing:.2em;margin-top:3px}
-.pill{font-size:10px;border:1px solid #7136a5;color:var(--neon);padding:6px 10px;border-radius:30px;background:#a855f711}
+.pill{font-size:10px;border:1px solid #7136a5;color:var(--neon);padding:6px 10px;border-radius:30px}
 main{max-width:1100px;margin:auto;padding:22px 16px 65px}
-.hero{padding:25px 0 20px}
-.eyebrow{color:var(--pink);font-size:10px;font-weight:900;letter-spacing:.2em}
+.hero{padding:25px 0 20px}.eyebrow{color:var(--pink);font-size:10px;font-weight:900;letter-spacing:.2em}
 .hero h1{font-size:clamp(32px,8vw,54px);line-height:1.04;margin:12px 0}
 .hero h1 span{background:linear-gradient(90deg,#c084fc,#e879f9);-webkit-background-clip:text;background-clip:text;color:transparent}
 .hero p,.muted{color:var(--muted);line-height:1.6}
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin:20px 0}
 .stat,.panel,.item{background:linear-gradient(145deg,#171026,#100b1a);border:1px solid var(--line);border-radius:17px}
-.stat{padding:15px}
-.stat b{display:block;font-size:27px;color:var(--neon)}
-.stat small{color:var(--muted);font-size:11px}
+.stat{padding:15px}.stat b{display:block;font-size:27px;color:var(--neon)}.stat small{color:var(--muted);font-size:11px}
 .tabs{display:flex;gap:9px;overflow-x:auto;margin:25px 0}
-button{
- border:1px solid var(--line);background:#211632;color:var(--text);
- padding:12px 15px;border-radius:11px;font-weight:750;cursor:pointer;white-space:nowrap
-}
+button{border:1px solid var(--line);background:#211632;color:var(--text);padding:12px 15px;border-radius:11px;font-weight:750;cursor:pointer;white-space:nowrap}
 button:disabled{opacity:.45;cursor:not-allowed}
-button.primary{background:linear-gradient(100deg,#9333ea,#c026d3);border-color:#c084fc;color:white;box-shadow:0 0 16px #a855f733}
-button.secondary{background:#251735}
-button.danger{color:var(--red);border-color:#713344}
+button.primary{background:linear-gradient(100deg,#9333ea,#c026d3);border-color:#c084fc;color:white}
+button.secondary{background:#251735}button.danger{color:var(--red);border-color:#713344}
 button.analyse{background:linear-gradient(100deg,#6d28d9,#a21caf);border-color:#d8b4fe;color:white}
-.tab.active{background:#8b35d3;border-color:#c084fc;color:white;box-shadow:0 0 15px #a855f744}
-.panel{padding:18px;margin:13px 0}
-.panel h2{font-size:18px;margin:0 0 14px}
+.tab.active{background:#8b35d3;border-color:#c084fc;color:white}
+.panel{padding:18px;margin:13px 0}.panel h2{font-size:18px;margin:0 0 14px}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 label{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.1em;margin:13px 0 7px}
-input,textarea,select{width:100%;background:#0b0712;border:1px solid #39274d;border-radius:10px;color:white;padding:13px;font:inherit;outline:none}
-input:focus,textarea:focus,select:focus{border-color:var(--purple);box-shadow:0 0 0 2px #a855f722}
+input,textarea,select{width:100%;background:#0b0712;border:1px solid #39274d;border-radius:10px;color:white;padding:13px;font:inherit}
 textarea{min-height:75px;resize:vertical}
-.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:13px}
-.actions button{flex:1}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:13px}.actions button{flex:1}
 .item{padding:15px;margin:11px 0;background:#100b19}
 .itemhead{display:flex;justify-content:space-between;gap:12px;align-items:center}
-.score{color:var(--neon);font-weight:900}
-.status{font-size:10px;color:var(--pink);text-transform:uppercase;letter-spacing:.1em;font-weight:800}
+.score{color:var(--neon);font-weight:900}.status{font-size:10px;color:var(--pink);text-transform:uppercase;letter-spacing:.1em;font-weight:800}
 .note{border-left:3px solid var(--purple);padding:12px;background:#211333;color:#e8d5ff;border-radius:6px;font-size:13px;line-height:1.6}
-.hidden{display:none!important}
-a{color:var(--neon)}
+.hidden{display:none!important}a{color:var(--neon)}
 hr{border:0;border-top:1px solid var(--line);margin:17px 0}
 footer{text-align:center;color:#766987;font-size:10px;padding:28px}
 #message{display:none;padding:12px 14px;border:1px solid #7136a5;background:#211333;border-radius:10px;margin:12px 0;color:#e9d5ff;line-height:1.5}
 #message.show{display:block}
-@media(max-width:600px){
- .grid{grid-template-columns:1fr}.stats{gap:7px}.stat{padding:11px}
- .stat b{font-size:22px}.pill{font-size:9px}
-}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.stats{gap:7px}.stat{padding:11px}.stat b{font-size:22px}.pill{font-size:9px}}
 </style>
 </head>
 <body>
 <header>
  <div class="brand">
   <div class="mark">C</div>
-  <div>
-   <div class="logo">CLIP<span>AURA</span>VAULT</div>
-   <div class="subbrand">CREATOR CLIPPING STUDIO</div>
-  </div>
+  <div><div class="logo">CLIP<span>AURA</span>VAULT</div><div class="subbrand">CREATOR CLIPPING STUDIO</div></div>
  </div>
- <div class="pill">V2 · APPROVAL MODE</div>
+ <div class="pill">V3 · APPROVAL MODE</div>
 </header>
 
 <main>
 <section class="hero">
  <div class="eyebrow">YOUR CONTENT. YOUR MOMENTS. YOUR VAULT.</div>
  <h1>Turn streams into<br><span>viral moments.</span></h1>
- <p>Manage VODs, analyse audio, review promising moments and prepare vertical content.</p>
+ <p>Download VODs, analyse moments, approve candidates and render clips automatically.</p>
 </section>
 
 <div id="message"></div>
@@ -121,7 +84,7 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
   <h2>＋ Add a creator VOD</h2>
   <form id="jobForm">
    <div class="grid">
-    <div><label>CREATOR NAME</label><input name="creator" placeholder="CaseOh, Kai Cenat, xQc..." required></div>
+    <div><label>CREATOR NAME</label><input name="creator" placeholder="Creator name..." required></div>
     <div><label>VOD URL</label><input name="vod_url" type="url" placeholder="Paste stream link..." required></div>
    </div>
    <label>MOMENT TYPE / NOTES</label>
@@ -135,11 +98,11 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
   <div class="note">
    01 — Add a VOD link.<br>
    02 — Download the source footage.<br>
-   03 — Analyse audio for energetic moments.<br>
-   04 — Review and approve suggested candidates.<br>
-   05 — Prepare and render approved clips.
+   03 — Analyse audio and find distinct candidate timestamps.<br>
+   04 — Approve the moments you want.<br>
+   05 — Render each approved moment directly from the VOD.
    <hr>
-   Analysis currently ranks audio peaks and energy. It does not yet understand visual gameplay or comedic context.
+   Current detection uses audio energy. It does not yet understand visual gameplay or comedic context.
   </div>
   <div class="actions"><button id="openClips" class="secondary">OPEN CLIPS.GG</button></div>
  </div>
@@ -153,19 +116,19 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
 <section id="review" class="hidden">
  <div class="panel">
   <h2>Clip approval room</h2>
-  <p class="muted">Review candidate moments. Only approved clips can be rendered.</p>
+  <p class="muted">Each candidate has its own timestamp in the original VOD. Only approved clips can be rendered.</p>
   <form id="clipForm">
    <label>SELECT VOD JOB</label>
    <select name="job_id" id="jobSelect" required></select>
    <div class="grid">
-    <div><label>CLIP TITLE</label><input name="title" placeholder="The funniest reaction..."></div>
-    <div><label>VIRALITY SCORE (0–100)</label><input name="score" type="number" min="0" max="100" value="75"></div>
+    <div><label>CLIP TITLE</label><input name="title" placeholder="Candidate title..."></div>
+    <div><label>SCORE (0–100)</label><input name="score" type="number" min="0" max="100" value="75"></div>
    </div>
    <div class="grid">
-    <div><label>SOURCE CLIP URL</label><input name="source_url" type="url" placeholder="Optional clip link"></div>
-    <div><label>DURATION IN SECONDS</label><input name="duration" type="number" min="0" step=".1" value="18"></div>
+    <div><label>SOURCE CLIP URL</label><input name="source_url" type="url" placeholder="Optional link"></div>
+    <div><label>DURATION IN SECONDS</label><input name="duration" type="number" min="5" max="90" value="18"></div>
    </div>
-   <div class="actions"><button class="primary" type="submit">ADD CANDIDATE</button></div>
+   <div class="actions"><button class="primary" type="submit">ADD MANUAL CANDIDATE</button></div>
   </form>
   <hr>
   <div id="clipsList"></div>
@@ -185,8 +148,7 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
 
 <script>
 const $=s=>document.querySelector(s);
-let jobs=[];
-let clips=[];
+let jobs=[],clips=[];
 
 function message(text){
  const box=$('#message');
@@ -207,22 +169,26 @@ function fd(form){return new FormData(form)}
 function esc(value=''){
  return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function timecode(value){
+ const n=Math.max(0,Math.floor(Number(value)||0));
+ return `${String(Math.floor(n/3600)).padStart(2,'0')}:${String(Math.floor(n%3600/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;
+}
 
 function switchTab(tab){
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
  ['queue','review','exports'].forEach(name=>$('#'+name).classList.toggle('hidden',name!==tab));
  if(tab==='review'||tab==='exports')loadClips();
 }
-document.querySelectorAll('.tab').forEach(button=>button.addEventListener('click',()=>switchTab(button.dataset.tab)));
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 
 async function loadJobs(){
  jobs=await api('/api/jobs');
  $('#jobCount').textContent=jobs.length;
- $('#jobSelect').innerHTML=jobs.map(job=>`<option value="${esc(job.id)}">${esc(job.creator)} · ${esc(job.status)}</option>`).join('');
+ $('#jobSelect').innerHTML=jobs.map(j=>`<option value="${esc(j.id)}">${esc(j.creator)} · ${esc(j.status)}</option>`).join('');
 
  $('#jobsList').innerHTML=jobs.length?jobs.map(job=>`
   <div class="item">
-   <div class="itemhead"><b>${esc(job.creator)}</b><span class="status">${esc(job.status.replaceAll('_',' '))}</span></div>
+   <div class="itemhead"><b>${esc(job.creator)}</b><span class="status">${esc((job.status||'').replaceAll('_',' '))}</span></div>
    <p class="muted">${esc(job.vod_url)}</p>
    ${job.vod_path?'<p class="score">✓ VOD DOWNLOADED</p>':''}
    <div class="actions">
@@ -234,11 +200,9 @@ async function loadJobs(){
     <div class="actions">
      <button class="analyse" data-action="analyse" data-id="${esc(job.id)}">⚡ ANALYSE VOD</button>
      <button data-action="review">VIEW CLIP REVIEW</button>
-    </div>
-   `:''}
+    </div>`:''}
    <div class="actions"><button data-action="clips" data-id="${esc(job.id)}">OPEN CLIPS.GG</button></div>
-  </div>
- `).join(''):'Your vault is empty. Add your first VOD above.';
+  </div>`).join(''):'Your vault is empty. Add your first VOD above.';
 }
 
 async function loadClips(){
@@ -246,87 +210,72 @@ async function loadClips(){
  $('#reviewCount').textContent=clips.filter(c=>c.status==='pending_review').length;
  $('#exportCount').textContent=clips.filter(c=>c.status==='rendered').length;
 
- $('#clipsList').innerHTML=clips.filter(c=>c.status!=='rendered').map(clip=>`
+ $('#clipsList').innerHTML=clips.filter(c=>c.status!=='rendered').map(clip=>{
+  const start=Number(clip.start_seconds||0);
+  const duration=Number(clip.duration||18);
+  return `
   <div class="item">
-   <div class="itemhead"><b>${esc(clip.title||'Untitled candidate')}</b><span class="score">${clip.score}/100</span></div>
-   <p class="muted">${esc(clip.creator)} · ${clip.duration}s · ${esc(clip.status)}</p>
+   <div class="itemhead"><b>${esc(clip.title||'Untitled candidate')}</b><span class="score">${esc(clip.score)}/100</span></div>
+   <p class="muted">${esc(clip.creator)} · ${duration.toFixed(1)} sec · ${esc(clip.status)}</p>
+   ${clip.start_seconds!==undefined?`<p class="score">VOD TIMESTAMP: ${timecode(start)} – ${timecode(start+duration)}</p>`:''}
    ${clip.source_url?`<a href="${esc(clip.source_url)}" target="_blank" rel="noopener">OPEN SOURCE MOMENT</a>`:''}
    ${clip.status==='pending_review'?`
     <div class="actions">
      <button class="primary" data-action="approve" data-id="${esc(clip.id)}">APPROVE</button>
      <button class="danger" data-action="reject" data-id="${esc(clip.id)}">REJECT</button>
-    </div>
-   `:''}
+    </div>`:''}
    ${clip.status==='approved'?`
-    <p class="muted">Approved. Upload the corresponding video file to enable rendering.</p>
-    <label>UPLOAD CLIP VIDEO</label>
-    <input type="file" accept="video/*" id="file-${esc(clip.id)}">
-    <div class="actions"><button data-action="upload" data-id="${esc(clip.id)}">UPLOAD FILE</button></div>
-    <div class="grid">
-     <div><label>START TIME (SECONDS)</label><input id="start-${esc(clip.id)}" type="number" min="0" value="0"></div>
-     <div><label>END TIME (SECONDS)</label><input id="end-${esc(clip.id)}" type="number" min="1" value="${Math.max(1,Math.min(18,clip.duration||18))}"></div>
-    </div>
-    <div class="actions"><button data-action="render" data-id="${esc(clip.id)}">RENDER VERTICAL MP4</button></div>
+    <p class="muted">${clip.vod_path?'Ready to extract from the original VOD. No upload needed.':'Original VOD not available. Upload a source clip if required.'}</p>
+    <div class="actions"><button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button></div>
    `:''}
-  </div>
- `).join('')||'No candidate clips yet. Analyse a downloaded VOD to find moments.';
+  </div>`;
+ }).join('')||'No candidate clips yet. Analyse a downloaded VOD to find moments.';
 
  $('#exportsList').innerHTML=clips.filter(c=>c.status==='rendered'&&c.export_path).map(clip=>`
   <div class="item">
    <b>${esc(clip.title||'ClipAuraVault export')}</b>
    <p class="muted">${esc(clip.creator)}</p>
    <a href="/api/exports/${encodeURIComponent(clip.export_path.split('/').pop())}">DOWNLOAD MP4</a>
-  </div>
- `).join('')||'No rendered exports yet.';
+  </div>`).join('')||'No rendered exports yet.';
 }
 
 $('#jobForm').addEventListener('submit',async e=>{
  e.preventDefault();
  try{
   await api('/api/jobs',{method:'POST',body:fd(e.target)});
-  e.target.reset();
-  await loadJobs();
-  message('VOD added to your vault.');
+  e.target.reset();await loadJobs();message('VOD added to your vault.');
  }catch(error){message(error.message)}
 });
 
 $('#clipForm').addEventListener('submit',async e=>{
  e.preventDefault();
- const data=fd(e.target);
- const id=data.get('job_id');
+ const data=fd(e.target),id=data.get('job_id');
  if(!id)return message('Add a VOD job first.');
  try{
   await api(`/api/jobs/${id}/clips`,{method:'POST',body:data});
-  e.target.reset();
-  await loadClips();
-  message('Candidate added for your approval.');
+  e.target.reset();await loadClips();message('Manual candidate added.');
  }catch(error){message(error.message)}
 });
 
 async function downloadVod(id){
  if(!confirm('Download this VOD to your ClipAuraVault server?'))return;
- message('Downloading VOD. Large streams can take a while. Keep the app open.');
+ message('Downloading VOD. Keep the app open.');
  try{
   const result=await api(`/api/jobs/${id}/download`,{method:'POST'});
-  await loadJobs();
-  message('VOD downloaded: '+result.filename);
+  await loadJobs();message('VOD downloaded: '+result.filename);
  }catch(error){message(error.message)}
 }
 
 async function analyseVod(id){
  const button=document.querySelector(`[data-action="analyse"][data-id="${id}"]`);
  if(button){button.disabled=true;button.textContent='ANALYSING...'}
- message('Analysing VOD audio. This may take a while for a long stream. Keep the app open.');
+ message('Analysing the VOD. Keep the app open.');
  try{
   const result=await api(`/api/jobs/${id}/analyse`,{method:'POST'});
-  await loadClips();
-  message(`Analysis complete. ${result.candidates_created} candidate moments added to Clip Review. Review and approve your favourites.`);
+  await loadClips();message(`Analysis complete. ${result.candidates_created} distinct timestamp candidates created.`);
   switchTab('review');
- }catch(error){
-  message('Analysis failed: '+error.message);
- }finally{
-  if(button){button.disabled=false;button.textContent='⚡ ANALYSE VOD'}
- }
+ }catch(error){message('Analysis failed: '+error.message)}
+ finally{if(button){button.disabled=false;button.textContent='⚡ ANALYSE VOD'}}
 }
 
 async function markSubmitted(id){
@@ -334,30 +283,26 @@ async function markSubmitted(id){
  catch(error){message(error.message)}
 }
 async function approve(id){
- try{await api(`/api/clips/${id}/approve`,{method:'POST'});await loadClips();message('Clip approved.')}
+ try{await api(`/api/clips/${id}/approve`,{method:'POST'});await loadClips();message('Approved. Ready to render.')}
  catch(error){message(error.message)}
 }
 async function reject(id){
- try{await api(`/api/clips/${id}/reject`,{method:'POST'});await loadClips();message('Clip rejected.')}
- catch(error){message(error.message)}
-}
-async function uploadClip(id){
- const file=$(`#file-${id}`).files[0];
- if(!file)return message('Choose a video file first.');
- const data=new FormData();data.append('video',file);
- try{await api(`/api/clips/${id}/upload`,{method:'POST',body:data});await loadClips();message('Clip uploaded.')}
+ try{await api(`/api/clips/${id}/reject`,{method:'POST'});await loadClips();message('Candidate rejected.')}
  catch(error){message(error.message)}
 }
 async function renderClip(id){
+ const clip=clips.find(c=>c.id===id);
+ if(!clip)return;
+ const duration=Math.min(90,Number(clip.duration)||18);
  const data=new FormData();
- data.append('start',$(`#start-${id}`).value);
- data.append('end',$(`#end-${id}`).value);
+ data.append('start','0');
+ data.append('end',String(duration));
+ message('Extracting this moment from the original VOD and rendering vertical MP4...');
  try{
-  message('Rendering your vertical MP4...');
-  await api(`/api/clips/${id}/render`,{method:'POST',body:data});
-  await loadClips();
-  message('Render complete. Your export is ready.');
- }catch(error){message(error.message)}
+  const result=await api(`/api/clips/${id}/render`,{method:'POST',body:data});
+  await loadClips();switchTab('exports');
+  message('Render complete. Your MP4 is ready in EXPORTS.');
+ }catch(error){message('Render failed: '+error.message)}
 }
 function copyLink(url){
  if(navigator.clipboard){
@@ -374,14 +319,12 @@ $('#openClips').addEventListener('click',()=>window.open('https://livestream.cli
 document.addEventListener('click',async event=>{
  const button=event.target.closest('[data-action]');
  if(!button)return;
- const action=button.dataset.action;
- const id=button.dataset.id;
+ const action=button.dataset.action,id=button.dataset.id;
  if(action==='download')await downloadVod(id);
  if(action==='analyse')await analyseVod(id);
  if(action==='submitted')await markSubmitted(id);
  if(action==='approve')await approve(id);
  if(action==='reject')await reject(id);
- if(action==='upload')await uploadClip(id);
  if(action==='render')await renderClip(id);
  if(action==='copy')copyLink(button.dataset.url);
  if(action==='clips')openClips(id);
