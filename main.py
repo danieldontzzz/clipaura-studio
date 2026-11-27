@@ -226,9 +226,18 @@ def download_vod(job_id: str):
         if old.is_file():
             old.unlink(missing_ok=True)
 
-    command = [
+        is_youtube = (
+        host == "youtube.com"
+        or host.endswith(".youtube.com")
+        or host == "youtu.be"
+    )
+
+    cookie_path = DATA / "youtube_cookies.txt"
+
+        command = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
+        "--js-runtimes", "deno",
         "--max-filesize", "4G",
         "--merge-output-format", "mp4",
         "--concurrent-fragments", "1",
@@ -238,10 +247,18 @@ def download_vod(job_id: str):
         "--retry-sleep", "fragment:exp=1:20",
         "--no-continue",
         "--paths", f"temp:{temp_dir}",
-        "-o", output_template,
-        job["vod_url"]
+        "-o", output_template
     ]
 
+    if is_youtube:
+        if not cookie_path.is_file():
+            raise HTTPException(
+                400,
+                "YouTube cookies have not been uploaded yet"
+            )
+        command.extend(["--cookies", str(cookie_path)])
+
+    command.append(job["vod_url"])
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=3600
