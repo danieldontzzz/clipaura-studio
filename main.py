@@ -314,7 +314,7 @@ def analyse_vod(job_id: str):
             })
             index += 1
 
-        return_code = process.wait(timeout=180)
+        return_code = process.wait(timeout=3600)
         if return_code != 0:
             raise HTTPException(500, "Audio analysis failed")
     except Exception as exc:
