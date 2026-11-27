@@ -529,30 +529,62 @@ def render_clip(
     with conn() as c:
         clip = c.execute("""
             SELECT clips.*, jobs.vod_path
-            FROM clips JOIN jobs ON jobs.id=clips.job_id
+            FROM clips
+            JOIN jobs ON jobs.id = clips.job_id
             WHERE clips.id=?
         """, (clip_id,)).fetchone()
 
     if not clip:
         raise HTTPException(404, "Clip not found")
-    if clip["status"] != "approved":
+
+    if clip["status"] not in {"approved", "rendered"}:
         raise HTTPException(409, "Approve this clip before rendering")
+
     if start < 0 or end <= start or end - start > 90:
         raise HTTPException(400, "Choose a valid range up to 90 seconds")
+
     if layout not in {"full_frame", "stacked_source"}:
         raise HTTPException(400, "Unsupported layout")
 
-    # Uploaded files remain supported. Otherwise cut directly from the VOD.
-    if clip["file_path"] and Path(clip["file_path"]).is_file():
+    vod_path = clip["vod_path"] or ""
+    is_analysed_candidate = (
+        (clip["title"] or "").startswith("Moment ")
+    )
+
+    # Analysed candidates MUST use their own timestamp in the original VOD.
+    if is_analysed_candidate and vod_path and Path(vod_path).is_file():
+        input_path = vod_path
+        seek_time = float(clip["start_seconds"] or 0) + start
+
+        candidate_duration = float(clip["duration"] or 0)
+        if candidate_duration <= 0:
+            raise HTTPException(400, "Candidate duration is invalid")
+
+        if end > candidate_duration + 0.1:
+            raise HTTPException(
+                400, "End time exceeds this candidate's duration"
+            )
+
+        source_type = "original_vod"
+
+    # Manually uploaded clips remain supported for non-analysed candidates.
+    elif clip["file_path"] and Path(clip["file_path"]).is_file():
         input_path = clip["file_path"]
         seek_time = start
-    else:
-        input_path = clip["vod_path"] or ""
-        if not input_path or not Path(input_path).is_file():
-            raise HTTPException(400, "The original VOD file is missing")
-        if end > float(clip["duration"]) + 0.1:
-            raise HTTPException(400, "End time exceeds this candidate's duration")
+        source_type = "uploaded_clip"
+
+    elif vod_path and Path(vod_path).is_file():
+        input_path = vod_path
         seek_time = float(clip["start_seconds"] or 0) + start
+        source_type = "original_vod"
+
+        if end > float(clip["duration"] or 0) + 0.1:
+            raise HTTPException(
+                400, "End time exceeds this candidate's duration"
+            )
+
+    else:
+        raise HTTPException(400, "The original VOD or uploaded video is missing")
 
     output = EXPORTS / f"{clip_id}_clipaura.mp4"
 
@@ -578,7 +610,10 @@ def render_clip(
 
     try:
         result = subprocess.run(
-            command, capture_output=True, text=True, timeout=900
+            command,
+            capture_output=True,
+            text=True,
+            timeout=900
         )
     except FileNotFoundError:
         raise HTTPException(503, "FFmpeg is not installed")
@@ -586,15 +621,27 @@ def render_clip(
         raise HTTPException(504, "Render timed out")
 
     if result.returncode != 0:
-        raise HTTPException(500, "FFmpeg render failed: " + result.stderr[-1200:])
+        raise HTTPException(
+            500,
+            "FFmpeg render failed: " + result.stderr[-1200:]
+        )
 
     with conn() as c:
         c.execute("""
-            UPDATE clips SET export_path=?, status='rendered'
+            UPDATE clips
+            SET export_path=?, status='rendered'
             WHERE id=?
         """, (str(output), clip_id))
 
-    return {"ok": True, "download": f"/api/exports/{output.name}"}
+    return {
+        "ok": True,
+        "source": source_type,
+        "clip_id": clip_id,
+        "source_start_seconds": seek_time,
+        "duration_seconds": end - start,
+        "download": f"/api/exports/{output.name}"
+    }
+
 
 
 @app.get("/api/exports/{filename}")
