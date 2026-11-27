@@ -2,6 +2,8 @@ from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlparse
 import sqlite3
+import os
+import secrets
 import math
 import array
 import subprocess
