@@ -1,11 +1,9 @@
-
 from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlparse
 import sqlite3
 import math
 import array
-import statistics
 import subprocess
 import sys
 import shutil
@@ -25,7 +23,7 @@ for folder in (DATA, UPLOADS, EXPORTS):
 
 DB = DATA / "clipaura.sqlite3"
 
-app = FastAPI(title="ClipAura Studio", version="2.1.0")
+app = FastAPI(title="ClipAura Studio", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,16 +67,20 @@ def init_db():
             )
         """)
 
-        columns = [
-            row["name"]
-            for row in c.execute(
-                "PRAGMA table_info(jobs)"
-            ).fetchall()
-        ]
+        job_columns = {
+            row["name"] for row in
+            c.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "vod_path" not in job_columns:
+            c.execute("ALTER TABLE jobs ADD COLUMN vod_path TEXT DEFAULT ''")
 
-        if "vod_path" not in columns:
+        clip_columns = {
+            row["name"] for row in
+            c.execute("PRAGMA table_info(clips)").fetchall()
+        }
+        if "start_seconds" not in clip_columns:
             c.execute(
-                "ALTER TABLE jobs ADD COLUMN vod_path TEXT DEFAULT ''"
+                "ALTER TABLE clips ADD COLUMN start_seconds REAL DEFAULT 0"
             )
 
 
@@ -87,11 +89,7 @@ init_db()
 
 @app.get("/api/health")
 def health():
-    return {
-        "ok": True,
-        "app": "ClipAura Studio",
-        "version": "2.1.0"
-    }
+    return {"ok": True, "app": "ClipAura Studio", "version": "3.0.0"}
 
 
 @app.get("/api/jobs")
@@ -100,233 +98,7 @@ def list_jobs():
         rows = c.execute(
             "SELECT * FROM jobs ORDER BY created_at DESC"
         ).fetchall()
-
     return [dict(row) for row in rows]
-
-
-@app.post("/api/jobs/{job_id}/analyse")
-def analyse_vod(job_id: str):
-    with conn() as c:
-        job = c.execute(
-            "SELECT * FROM jobs WHERE id=?",
-            (job_id,)
-        ).fetchone()
-
-    if not job:
-        raise HTTPException(404, "Job not found")
-
-    vod_path = job["vod_path"] or ""
-
-    if not vod_path or not Path(vod_path).is_file():
-        raise HTTPException(400, "Download the VOD before analysing it")
-
-    # Get the video duration.
-    try:
-        probe = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                vod_path
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        duration = float(probe.stdout.strip())
-    except Exception:
-        raise HTTPException(500, "Could not read VOD duration")
-
-    if duration <= 0:
-        raise HTTPException(400, "Invalid VOD duration")
-
-    # Stream audio as small chunks to avoid loading the whole VOD.
-    command = [
-        "ffmpeg", "-v", "error",
-        "-i", vod_path,
-        "-vn", "-ac", "1",
-        "-ar", "8000",
-        "-f", "s16le", "pipe:1"
-    ]
-
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-
-    window_seconds = 5
-    samples_per_window = 8000 * window_seconds
-    window_bytes = samples_per_window * 2
-    measurements = []
-
-    try:
-        index = 0
-
-        while True:
-            raw = process.stdout.read(window_bytes)
-
-            if not raw:
-                break
-
-            samples = array.array("h")
-            samples.frombytes(raw)
-
-            if not samples:
-                break
-
-            square_sum = sum(value * value for value in samples)
-            rms = math.sqrt(square_sum / len(samples))
-            peak = max(abs(value) for value in samples)
-
-            db = 20 * math.log10(max(rms, 1) / 32768)
-            peak_db = 20 * math.log10(max(peak, 1) / 32768)
-
-            measurements.append({
-                "time": index * window_seconds,
-                "db": db,
-                "peak_db": peak_db
-            })
-
-            index += 1
-
-        return_code = process.wait(timeout=120)
-
-        if return_code != 0:
-            raise HTTPException(500, "Audio analysis failed")
-
-    except Exception as exc:
-        process.kill()
-        if isinstance(exc, HTTPException):
-            raise
-        raise HTTPException(500, "Audio analysis could not finish")
-
-    if len(measurements) < 2:
-        raise HTTPException(400, "Not enough audio to analyse")
-
-    levels = [item["db"] for item in measurements]
-    peaks = [item["peak_db"] for item in measurements]
-
-    low_level = min(levels)
-    high_level = max(levels)
-    low_peak = min(peaks)
-    high_peak = max(peaks)
-
-    def normalise(value, low, high):
-        if high <= low:
-            return 0
-        return max(0, min(100, (value - low) / (high - low) * 100))
-
-    # Rank high-energy windows.
-    ranked = []
-
-    for item in measurements:
-        energy_score = normalise(
-            item["db"], low_level, high_level
-        )
-        peak_score = normalise(
-            item["peak_db"], low_peak, high_peak
-        )
-
-        score = round(
-            energy_score * 0.65 + peak_score * 0.35
-        )
-
-        ranked.append({
-            "time": item["time"],
-            "score": score
-        })
-
-    # Prefer strong moments separated by at least 18 seconds.
-    ranked.sort(key=lambda item: item["score"], reverse=True)
-
-    selected = []
-
-    for item in ranked:
-        if item["score"] < 25:
-            continue
-
-        start = max(0, item["time"] - 9)
-        end = min(duration, start + 18)
-
-        if end - start < 5:
-            continue
-
-        if any(
-            abs(item["time"] - existing["time"]) < 18
-            for existing in selected
-        ):
-            continue
-
-        selected.append({
-            "time": item["time"],
-            "start": start,
-            "duration": end - start,
-            "score": item["score"]
-        })
-
-        if len(selected) >= 20:
-            break
-
-    if not selected:
-        raise HTTPException(
-            400,
-            "No strong audio moments found in this VOD"
-        )
-
-    # Add candidates to the approval room.
-    created = []
-
-    with conn() as c:
-        for number, item in enumerate(selected, start=1):
-            clip_id = str(uuid4())
-
-            start_seconds = int(item["start"])
-            hours = start_seconds // 3600
-            minutes = (start_seconds % 3600) // 60
-            seconds = start_seconds % 60
-            timestamp = f"{hours}h{minutes}m{seconds}s"
-
-            original_url = job["vod_url"]
-            separator = "&" if "?" in original_url else "?"
-            source_url = f"{original_url}{separator}t={timestamp}"
-
-            title = f"Audio highlight {number} — {timestamp}"
-
-            c.execute(
-                """
-                INSERT INTO clips(
-                    id, job_id, title, source_url,
-                    score, duration, status
-                )
-                VALUES(?,?,?,?,?,?,?)
-                """,
-                (
-                    clip_id,
-                    job_id,
-                    title,
-                    source_url,
-                    item["score"],
-                    item["duration"],
-                    "pending_review"
-                )
-            )
-
-            created.append({
-                "id": clip_id,
-                "title": title,
-                "score": item["score"],
-                "start": start_seconds,
-                "duration": round(item["duration"], 2),
-                "status": "pending_review"
-            })
-
-    return {
-        "ok": True,
-        "message": "VOD analysis complete",
-        "candidates_created": len(created),
-        "clips": created
-    }
 
 
 @app.post("/api/jobs")
@@ -338,10 +110,7 @@ def create_job(
     parsed = urlparse(vod_url.strip())
 
     if parsed.scheme not in ("https", "http") or not parsed.hostname:
-        raise HTTPException(
-            400,
-            "Enter a valid VOD link beginning with http:// or https://"
-        )
+        raise HTTPException(400, "Enter a valid VOD link")
 
     if not creator.strip():
         raise HTTPException(400, "Enter the creator name")
@@ -349,25 +118,12 @@ def create_job(
     job_id = str(uuid4())
 
     with conn() as c:
-        c.execute(
-            """
+        c.execute("""
             INSERT INTO jobs(id, creator, vod_url, notes)
             VALUES(?,?,?,?)
-            """,
-            (
-                job_id,
-                creator.strip(),
-                vod_url.strip(),
-                notes.strip()
-            )
-        )
+        """, (job_id, creator.strip(), vod_url.strip(), notes.strip()))
 
-    return {
-        "id": job_id,
-        "creator": creator.strip(),
-        "vod_url": vod_url.strip(),
-        "status": "ready_to_submit"
-    }
+    return {"id": job_id, "status": "ready_to_submit"}
 
 
 @app.post("/api/jobs/{job_id}/submitted")
@@ -377,10 +133,8 @@ def mark_submitted(job_id: str):
             "UPDATE jobs SET status='submitted_to_clipsgg' WHERE id=?",
             (job_id,)
         )
-
         if not cur.rowcount:
             raise HTTPException(404, "Job not found")
-
     return {"ok": True}
 
 
@@ -388,8 +142,7 @@ def mark_submitted(job_id: str):
 def download_vod(job_id: str):
     with conn() as c:
         job = c.execute(
-            "SELECT * FROM jobs WHERE id=?",
-            (job_id,)
+            "SELECT * FROM jobs WHERE id=?", (job_id,)
         ).fetchone()
 
     if not job:
@@ -397,145 +150,284 @@ def download_vod(job_id: str):
 
     parsed = urlparse(job["vod_url"])
     host = (parsed.hostname or "").lower()
-
-    allowed_hosts = (
-        host == "twitch.tv"
-        or host.endswith(".twitch.tv")
-        or host == "youtube.com"
-        or host.endswith(".youtube.com")
+    allowed = (
+        host == "twitch.tv" or host.endswith(".twitch.tv")
+        or host == "youtube.com" or host.endswith(".youtube.com")
         or host == "youtu.be"
-        or host == "kick.com"
-        or host.endswith(".kick.com")
+        or host == "kick.com" or host.endswith(".kick.com")
     )
 
-    if parsed.scheme != "https" or not allowed_hosts:
-        raise HTTPException(
-            400,
-            "Use a supported HTTPS Twitch, YouTube or Kick VOD link"
-        )
+    if parsed.scheme != "https" or not allowed:
+        raise HTTPException(400, "Use a supported HTTPS Twitch, YouTube or Kick VOD link")
 
-    # Return an existing successful download instead of downloading again.
-    existing_path = job["vod_path"] or ""
-
-    if existing_path and Path(existing_path).is_file():
+    existing = job["vod_path"] or ""
+    if existing and Path(existing).is_file():
         return {
             "ok": True,
             "status": "vod_downloaded",
-            "filename": Path(existing_path).name
+            "filename": Path(existing).name
         }
 
     output_template = str(UPLOADS / f"{job_id}_vod.%(ext)s")
-
-    # Give each download its own temporary directory.
     temp_dir = UPLOADS / f"{job_id}_temp"
 
-    # Remove stale temporary files from a previous failed attempt.
     if temp_dir.exists():
         shutil.rmtree(temp_dir, ignore_errors=True)
-
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Remove incomplete output files from an earlier attempt.
-    for old_file in UPLOADS.glob(f"{job_id}_vod.*"):
-        if old_file.is_file():
-            old_file.unlink(missing_ok=True)
+    for old in UPLOADS.glob(f"{job_id}_vod.*"):
+        if old.is_file():
+            old.unlink(missing_ok=True)
 
-    # Do not force "-f best". yt-dlp chooses the best available
-    # Twitch formats and merges them using FFmpeg.
     command = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
-
+        sys.executable, "-m", "yt_dlp",
         "--no-playlist",
         "--max-filesize", "4G",
-
         "--merge-output-format", "mp4",
-
-        # Twitch fragment reliability settings.
         "--concurrent-fragments", "1",
         "--fragment-retries", "20",
         "--retries", "10",
         "--file-access-retries", "10",
         "--retry-sleep", "fragment:exp=1:20",
-
-        # Avoid resuming broken partial fragment downloads.
         "--no-continue",
-
-        # Keep temporary fragments separate from final output.
         "--paths", f"temp:{temp_dir}",
-
         "-o", output_template,
         job["vod_url"]
     ]
 
     try:
         result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=3600
+            command, capture_output=True, text=True, timeout=3600
         )
-
     except subprocess.TimeoutExpired:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(
-            504,
-            "Twitch VOD download timed out after 60 minutes"
-        )
-
+        raise HTTPException(504, "VOD download timed out")
     except FileNotFoundError:
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise HTTPException(
-            503,
-            "Python or yt-dlp could not be started"
-        )
+        raise HTTPException(503, "Could not start yt-dlp")
 
     if result.returncode != 0:
-        error_text = (result.stderr or result.stdout or "Unknown download error")
-
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-        raise HTTPException(
-            500,
-            "VOD download failed: " + error_text[-2000:]
-        )
+        error = (result.stderr or result.stdout or "Unknown error")[-2000:]
+        raise HTTPException(500, "VOD download failed: " + error)
 
     downloaded = [
-        path for path in UPLOADS.glob(f"{job_id}_vod.*")
-        if path.is_file()
-        and path.suffix.lower() in {
-            ".mp4", ".mkv", ".webm", ".mov"
-        }
+        p for p in UPLOADS.glob(f"{job_id}_vod.*")
+        if p.is_file() and p.suffix.lower() in
+        {".mp4", ".mkv", ".webm", ".mov"}
     ]
 
-    if not downloaded:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
-        raise HTTPException(
-            500,
-            "Download completed but no video file was found"
-        )
+    if not downloaded:
+        raise HTTPException(500, "Download finished but no video was found")
 
     vod_path = str(downloaded[0])
 
-    # Remove temporary fragments after a successful download.
-    shutil.rmtree(temp_dir, ignore_errors=True)
-
     with conn() as c:
-        c.execute(
-            """
-            UPDATE jobs
-            SET vod_path=?, status='vod_downloaded'
+        c.execute("""
+            UPDATE jobs SET vod_path=?, status='vod_downloaded'
             WHERE id=?
-            """,
-            (vod_path, job_id)
-        )
+        """, (vod_path, job_id))
 
     return {
         "ok": True,
         "status": "vod_downloaded",
         "filename": downloaded[0].name
+    }
+
+
+@app.post("/api/jobs/{job_id}/analyse")
+def analyse_vod(job_id: str):
+    with conn() as c:
+        job = c.execute(
+            "SELECT * FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    vod_path = job["vod_path"] or ""
+    if not vod_path or not Path(vod_path).is_file():
+        raise HTTPException(400, "Download the VOD before analysing it")
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            vod_path
+        ],
+        capture_output=True, text=True, timeout=60
+    )
+
+    try:
+        vod_duration = float(probe.stdout.strip())
+    except Exception:
+        raise HTTPException(500, "Could not read VOD duration")
+
+    if probe.returncode != 0 or vod_duration <= 0:
+        raise HTTPException(500, "Invalid VOD duration")
+
+    # Read audio in 5-second windows. stderr is discarded to avoid
+    # a full stderr pipe blocking the audio process.
+    command = [
+        "ffmpeg", "-v", "error", "-i", vod_path,
+        "-vn", "-ac", "1", "-ar", "8000",
+        "-f", "s16le", "pipe:1"
+    ]
+
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+
+    window_seconds = 5
+    window_bytes = 8000 * window_seconds * 2
+    measurements = []
+
+    try:
+        index = 0
+        while True:
+            raw = process.stdout.read(window_bytes)
+            if not raw:
+                break
+
+            # Ignore a trailing incomplete audio sample.
+            raw = raw[:len(raw) - (len(raw) % 2)]
+            samples = array.array("h")
+            samples.frombytes(raw)
+
+            if not samples:
+                break
+
+            square_sum = sum(v * v for v in samples)
+            rms = math.sqrt(square_sum / len(samples))
+            peak = max(abs(v) for v in samples)
+
+            db = 20 * math.log10(max(rms, 1) / 32768)
+            peak_db = 20 * math.log10(max(peak, 1) / 32768)
+
+            measurements.append({
+                "time": index * window_seconds,
+                "db": db,
+                "peak_db": peak_db
+            })
+            index += 1
+
+        return_code = process.wait(timeout=180)
+        if return_code != 0:
+            raise HTTPException(500, "Audio analysis failed")
+    except Exception as exc:
+        process.kill()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(500, "Audio analysis could not finish")
+
+    if len(measurements) < 2:
+        raise HTTPException(400, "Not enough audio to analyse")
+
+    levels = [m["db"] for m in measurements]
+    peaks = [m["peak_db"] for m in measurements]
+
+    def normalise(value, low, high):
+        if high <= low:
+            return 0
+        return max(0, min(100, (value - low) / (high - low) * 100))
+
+    ranked = []
+    for item in measurements:
+        energy = normalise(item["db"], min(levels), max(levels))
+        peak = normalise(item["peak_db"], min(peaks), max(peaks))
+        score = round(energy * 0.65 + peak * 0.35)
+        ranked.append({"time": item["time"], "score": score})
+
+    # Pick strong moments spread across the VOD. Each selected moment
+    # gets its own stored start time and its own 18-second source section.
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    selected = []
+    min_gap = 25
+    clip_length = 18
+
+    for item in ranked:
+        if item["score"] < 25:
+            continue
+
+        event_time = item["time"] + 2.5
+        start = max(0, min(event_time - 6, vod_duration - clip_length))
+        end = min(vod_duration, start + clip_length)
+
+        if end - start < 5:
+            continue
+
+        if any(abs(start - old["start"]) < min_gap for old in selected):
+            continue
+
+        selected.append({
+            "time": event_time,
+            "start": round(start, 2),
+            "duration": round(end - start, 2),
+            "score": item["score"]
+        })
+
+        if len(selected) >= 20:
+            break
+
+    if not selected:
+        raise HTTPException(400, "No strong audio moments found")
+
+    # Order candidates chronologically and replace only this job's
+    # previous pending candidates. Approved/rejected clips are retained.
+    selected.sort(key=lambda item: item["start"])
+
+    created = []
+    with conn() as c:
+        c.execute("""
+            DELETE FROM clips
+            WHERE job_id=? AND status='pending_review'
+        """, (job_id,))
+
+        for number, item in enumerate(selected, start=1):
+            clip_id = str(uuid4())
+            start_seconds = item["start"]
+
+            whole = int(start_seconds)
+            timestamp = (
+                f"{whole // 3600}h"
+                f"{(whole % 3600) // 60}m"
+                f"{whole % 60}s"
+            )
+
+            original_url = job["vod_url"]
+            separator = "&" if "?" in original_url else "?"
+            source_url = f"{original_url}{separator}t={timestamp}"
+
+            title = f"Moment {number} — {timestamp}"
+
+            c.execute("""
+                INSERT INTO clips(
+                    id, job_id, title, source_url, score,
+                    duration, status, start_seconds
+                )
+                VALUES(?,?,?,?,?,?,?,?)
+            """, (
+                clip_id, job_id, title, source_url,
+                item["score"], item["duration"],
+                "pending_review", start_seconds
+            ))
+
+            created.append({
+                "id": clip_id,
+                "title": title,
+                "score": item["score"],
+                "start_seconds": start_seconds,
+                "duration": item["duration"]
+            })
+
+    return {
+        "ok": True,
+        "message": "VOD analysis complete",
+        "candidates_created": len(created),
+        "clips": created
     }
 
 
@@ -545,52 +437,37 @@ def add_clip(
     title: str = Form(""),
     source_url: str = Form(""),
     score: int = Form(0),
-    duration: float = Form(0)
+    duration: float = Form(18)
 ):
     with conn() as c:
         job = c.execute(
-            "SELECT id FROM jobs WHERE id=?",
-            (job_id,)
+            "SELECT id FROM jobs WHERE id=?", (job_id,)
         ).fetchone()
-
         if not job:
             raise HTTPException(404, "Job not found")
 
         clip_id = str(uuid4())
-
-        c.execute(
-            """
+        c.execute("""
             INSERT INTO clips(
                 id, job_id, title, source_url, score, duration
-            )
-            VALUES(?,?,?,?,?,?)
-            """,
-            (
-                clip_id,
-                job_id,
-                title,
-                source_url,
-                max(0, min(100, score)),
-                max(0, duration)
-            )
-        )
+            ) VALUES(?,?,?,?,?,?)
+        """, (
+            clip_id, job_id, title, source_url,
+            max(0, min(100, score)), max(0, duration)
+        ))
 
-    return {
-        "id": clip_id,
-        "status": "pending_review"
-    }
+    return {"id": clip_id, "status": "pending_review"}
 
 
 @app.get("/api/clips")
 def list_clips():
     with conn() as c:
         rows = c.execute("""
-            SELECT clips.*, jobs.creator
+            SELECT clips.*, jobs.creator, jobs.vod_path
             FROM clips
             JOIN jobs ON jobs.id=clips.job_id
-            ORDER BY clips.score DESC, clips.rowid DESC
+            ORDER BY clips.rowid DESC
         """).fetchall()
-
     return [dict(row) for row in rows]
 
 
@@ -601,10 +478,8 @@ def approve_clip(clip_id: str):
             "UPDATE clips SET status='approved' WHERE id=?",
             (clip_id,)
         )
-
         if not cur.rowcount:
             raise HTTPException(404, "Clip not found")
-
     return {"ok": True, "status": "approved"}
 
 
@@ -615,32 +490,21 @@ def reject_clip(clip_id: str):
             "UPDATE clips SET status='rejected' WHERE id=?",
             (clip_id,)
         )
-
         if not cur.rowcount:
             raise HTTPException(404, "Clip not found")
-
     return {"ok": True, "status": "rejected"}
 
 
 @app.post("/api/clips/{clip_id}/upload")
-async def upload_clip(
-    clip_id: str,
-    video: UploadFile = File(...)
-):
+async def upload_clip(clip_id: str, video: UploadFile = File(...)):
     extension = Path(video.filename or "clip.mp4").suffix.lower()
-
     if extension not in {".mp4", ".mov", ".mkv", ".webm"}:
-        raise HTTPException(
-            400,
-            "Upload MP4, MOV, MKV or WEBM"
-        )
+        raise HTTPException(400, "Upload MP4, MOV, MKV or WEBM")
 
     with conn() as c:
         exists = c.execute(
-            "SELECT id FROM clips WHERE id=?",
-            (clip_id,)
+            "SELECT id FROM clips WHERE id=?", (clip_id,)
         ).fetchone()
-
     if not exists:
         raise HTTPException(404, "Clip not found")
 
@@ -652,11 +516,7 @@ async def upload_clip(
             "UPDATE clips SET file_path=? WHERE id=?",
             (str(path), clip_id)
         )
-
-    return {
-        "ok": True,
-        "filename": path.name
-    }
+    return {"ok": True, "filename": path.name}
 
 
 @app.post("/api/clips/{clip_id}/render")
@@ -667,34 +527,32 @@ def render_clip(
     layout: str = Form("full_frame")
 ):
     with conn() as c:
-        clip = c.execute(
-            "SELECT * FROM clips WHERE id=?",
-            (clip_id,)
-        ).fetchone()
+        clip = c.execute("""
+            SELECT clips.*, jobs.vod_path
+            FROM clips JOIN jobs ON jobs.id=clips.job_id
+            WHERE clips.id=?
+        """, (clip_id,)).fetchone()
 
     if not clip:
         raise HTTPException(404, "Clip not found")
-
     if clip["status"] != "approved":
-        raise HTTPException(
-            409,
-            "Approve this clip before rendering"
-        )
-
-    if not clip["file_path"] or not Path(clip["file_path"]).exists():
-        raise HTTPException(
-            400,
-            "Upload the clip file first"
-        )
-
+        raise HTTPException(409, "Approve this clip before rendering")
     if start < 0 or end <= start or end - start > 90:
-        raise HTTPException(
-            400,
-            "Choose a valid range up to 90 seconds"
-        )
-
+        raise HTTPException(400, "Choose a valid range up to 90 seconds")
     if layout not in {"full_frame", "stacked_source"}:
         raise HTTPException(400, "Unsupported layout")
+
+    # Uploaded files remain supported. Otherwise cut directly from the VOD.
+    if clip["file_path"] and Path(clip["file_path"]).is_file():
+        input_path = clip["file_path"]
+        seek_time = start
+    else:
+        input_path = clip["vod_path"] or ""
+        if not input_path or not Path(input_path).is_file():
+            raise HTTPException(400, "The original VOD file is missing")
+        if end > float(clip["duration"]) + 0.1:
+            raise HTTPException(400, "End time exceeds this candidate's duration")
+        seek_time = float(clip["start_seconds"] or 0) + start
 
     output = EXPORTS / f"{clip_id}_clipaura.mp4"
 
@@ -704,10 +562,9 @@ def render_clip(
     )
 
     command = [
-        "ffmpeg",
-        "-y",
-        "-ss", str(start),
-        "-i", clip["file_path"],
+        "ffmpeg", "-y",
+        "-ss", str(seek_time),
+        "-i", input_path,
         "-t", str(end - start),
         "-vf", video_filter,
         "-c:v", "libx264",
@@ -721,62 +578,37 @@ def render_clip(
 
     try:
         result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=900
+            command, capture_output=True, text=True, timeout=900
         )
-
     except FileNotFoundError:
-        raise HTTPException(
-            503,
-            "FFmpeg is not installed on this server"
-        )
-
+        raise HTTPException(503, "FFmpeg is not installed")
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "Render timed out")
 
     if result.returncode != 0:
-        raise HTTPException(
-            500,
-            "FFmpeg render failed: " + result.stderr[-1200:]
-        )
+        raise HTTPException(500, "FFmpeg render failed: " + result.stderr[-1200:])
 
     with conn() as c:
-        c.execute(
-            """
-            UPDATE clips
-            SET export_path=?, status='rendered'
+        c.execute("""
+            UPDATE clips SET export_path=?, status='rendered'
             WHERE id=?
-            """,
-            (str(output), clip_id)
-        )
+        """, (str(output), clip_id))
 
-    return {
-        "ok": True,
-        "download": f"/api/exports/{output.name}"
-    }
+    return {"ok": True, "download": f"/api/exports/{output.name}"}
 
 
 @app.get("/api/exports/{filename}")
 def download_export(filename: str):
     path = EXPORTS / Path(filename).name
-
-    if not path.exists():
+    if not path.is_file():
         raise HTTPException(404, "Export not found")
-
     return FileResponse(
-        path,
-        media_type="video/mp4",
-        filename=path.name
+        path, media_type="video/mp4", filename=path.name
     )
 
 
 app.mount(
     "/",
-    StaticFiles(
-        directory=Path(__file__).parent / "static",
-        html=True
-    ),
+    StaticFiles(directory=Path(__file__).parent / "static", html=True),
     name="static"
 )
