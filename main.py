@@ -3,6 +3,9 @@ from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlparse
 import sqlite3
+import math
+import array
+import statistics
 import subprocess
 import sys
 import shutil
@@ -99,6 +102,231 @@ def list_jobs():
         ).fetchall()
 
     return [dict(row) for row in rows]
+
+
+@app.post("/api/jobs/{job_id}/analyse")
+def analyse_vod(job_id: str):
+    with conn() as c:
+        job = c.execute(
+            "SELECT * FROM jobs WHERE id=?",
+            (job_id,)
+        ).fetchone()
+
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    vod_path = job["vod_path"] or ""
+
+    if not vod_path or not Path(vod_path).is_file():
+        raise HTTPException(400, "Download the VOD before analysing it")
+
+    # Get the video duration.
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                vod_path
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        duration = float(probe.stdout.strip())
+    except Exception:
+        raise HTTPException(500, "Could not read VOD duration")
+
+    if duration <= 0:
+        raise HTTPException(400, "Invalid VOD duration")
+
+    # Stream audio as small chunks to avoid loading the whole VOD.
+    command = [
+        "ffmpeg", "-v", "error",
+        "-i", vod_path,
+        "-vn", "-ac", "1",
+        "-ar", "8000",
+        "-f", "s16le", "pipe:1"
+    ]
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    window_seconds = 5
+    samples_per_window = 8000 * window_seconds
+    window_bytes = samples_per_window * 2
+    measurements = []
+
+    try:
+        index = 0
+
+        while True:
+            raw = process.stdout.read(window_bytes)
+
+            if not raw:
+                break
+
+            samples = array.array("h")
+            samples.frombytes(raw)
+
+            if not samples:
+                break
+
+            square_sum = sum(value * value for value in samples)
+            rms = math.sqrt(square_sum / len(samples))
+            peak = max(abs(value) for value in samples)
+
+            db = 20 * math.log10(max(rms, 1) / 32768)
+            peak_db = 20 * math.log10(max(peak, 1) / 32768)
+
+            measurements.append({
+                "time": index * window_seconds,
+                "db": db,
+                "peak_db": peak_db
+            })
+
+            index += 1
+
+        return_code = process.wait(timeout=120)
+
+        if return_code != 0:
+            raise HTTPException(500, "Audio analysis failed")
+
+    except Exception as exc:
+        process.kill()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(500, "Audio analysis could not finish")
+
+    if len(measurements) < 2:
+        raise HTTPException(400, "Not enough audio to analyse")
+
+    levels = [item["db"] for item in measurements]
+    peaks = [item["peak_db"] for item in measurements]
+
+    low_level = min(levels)
+    high_level = max(levels)
+    low_peak = min(peaks)
+    high_peak = max(peaks)
+
+    def normalise(value, low, high):
+        if high <= low:
+            return 0
+        return max(0, min(100, (value - low) / (high - low) * 100))
+
+    # Rank high-energy windows.
+    ranked = []
+
+    for item in measurements:
+        energy_score = normalise(
+            item["db"], low_level, high_level
+        )
+        peak_score = normalise(
+            item["peak_db"], low_peak, high_peak
+        )
+
+        score = round(
+            energy_score * 0.65 + peak_score * 0.35
+        )
+
+        ranked.append({
+            "time": item["time"],
+            "score": score
+        })
+
+    # Prefer strong moments separated by at least 18 seconds.
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+
+    selected = []
+
+    for item in ranked:
+        if item["score"] < 25:
+            continue
+
+        start = max(0, item["time"] - 9)
+        end = min(duration, start + 18)
+
+        if end - start < 5:
+            continue
+
+        if any(
+            abs(item["time"] - existing["time"]) < 18
+            for existing in selected
+        ):
+            continue
+
+        selected.append({
+            "time": item["time"],
+            "start": start,
+            "duration": end - start,
+            "score": item["score"]
+        })
+
+        if len(selected) >= 20:
+            break
+
+    if not selected:
+        raise HTTPException(
+            400,
+            "No strong audio moments found in this VOD"
+        )
+
+    # Add candidates to the approval room.
+    created = []
+
+    with conn() as c:
+        for number, item in enumerate(selected, start=1):
+            clip_id = str(uuid4())
+
+            start_seconds = int(item["start"])
+            hours = start_seconds // 3600
+            minutes = (start_seconds % 3600) // 60
+            seconds = start_seconds % 60
+            timestamp = f"{hours}h{minutes}m{seconds}s"
+
+            original_url = job["vod_url"]
+            separator = "&" if "?" in original_url else "?"
+            source_url = f"{original_url}{separator}t={timestamp}"
+
+            title = f"Audio highlight {number} — {timestamp}"
+
+            c.execute(
+                """
+                INSERT INTO clips(
+                    id, job_id, title, source_url,
+                    score, duration, status
+                )
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    clip_id,
+                    job_id,
+                    title,
+                    source_url,
+                    item["score"],
+                    item["duration"],
+                    "pending_review"
+                )
+            )
+
+            created.append({
+                "id": clip_id,
+                "title": title,
+                "score": item["score"],
+                "start": start_seconds,
+                "duration": round(item["duration"], 2),
+                "status": "pending_review"
+            })
+
+    return {
+        "ok": True,
+        "message": "VOD analysis complete",
+        "candidates_created": len(created),
+        "clips": created
+    }
 
 
 @app.post("/api/jobs")
