@@ -205,31 +205,43 @@ async function loadJobs(){
   </div>`).join(''):'Your vault is empty. Add your first VOD above.';
 }
 
+
 async function loadClips(){
  clips=await api('/api/clips');
- $('#reviewCount').textContent=clips.filter(c=>c.status==='pending_review').length;
+
+ const selectedJobId=$('#jobSelect').value;
+ const visibleClips=clips.filter(c=>c.job_id===selectedJobId);
+
+ $('#reviewCount').textContent=visibleClips.filter(c=>c.status==='pending_review').length;
  $('#exportCount').textContent=clips.filter(c=>c.status==='rendered').length;
 
- $('#clipsList').innerHTML=clips.filter(c=>c.status!=='rendered').map(clip=>{
+ $('#clipsList').innerHTML=visibleClips.filter(c=>c.status!=='rendered').map(clip=>{
   const start=Number(clip.start_seconds||0);
   const duration=Number(clip.duration||18);
+
   return `
   <div class="item">
-   <div class="itemhead"><b>${esc(clip.title||'Untitled candidate')}</b><span class="score">${esc(clip.score)}/100</span></div>
+   <div class="itemhead">
+    <b>${esc(clip.title||'Untitled candidate')}</b>
+    <span class="score">${esc(clip.score)}/100</span>
+   </div>
    <p class="muted">${esc(clip.creator)} · ${duration.toFixed(1)} sec · ${esc(clip.status)}</p>
    ${clip.start_seconds!==undefined?`<p class="score">VOD TIMESTAMP: ${timecode(start)} – ${timecode(start+duration)}</p>`:''}
    ${clip.source_url?`<a href="${esc(clip.source_url)}" target="_blank" rel="noopener">OPEN SOURCE MOMENT</a>`:''}
+
    ${clip.status==='pending_review'?`
     <div class="actions">
      <button class="primary" data-action="approve" data-id="${esc(clip.id)}">APPROVE</button>
      <button class="danger" data-action="reject" data-id="${esc(clip.id)}">REJECT</button>
     </div>`:''}
+
    ${clip.status==='approved'?`
-    <p class="muted">${clip.vod_path?'Ready to extract from the original VOD. No upload needed.':'Original VOD not available. Upload a source clip if required.'}</p>
-    <div class="actions"><button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button></div>
-   `:''}
+    <p class="muted">${clip.vod_path?'Ready to extract from this original VOD.':'Original VOD unavailable.'}</p>
+    <div class="actions">
+     <button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button>
+    </div>`:''}
   </div>`;
- }).join('')||'No candidate clips yet. Analyse a downloaded VOD to find moments.';
+ }).join('')||'No clips for this VOD yet. Select another VOD or analyse this one.';
 
  $('#exportsList').innerHTML=clips.filter(c=>c.status==='rendered'&&c.export_path).map(clip=>`
   <div class="item">
@@ -237,6 +249,8 @@ async function loadClips(){
    <p class="muted">${esc(clip.creator)}</p>
    <a href="/api/exports/${encodeURIComponent(clip.export_path.split('/').pop())}">DOWNLOAD MP4</a>
   </div>`).join('')||'No rendered exports yet.';
+}
+
 }
 
 $('#jobForm').addEventListener('submit',async e=>{
