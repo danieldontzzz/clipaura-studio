@@ -253,6 +253,7 @@ def download_vod(job_id: str):
 
     cookie_path = DATA / "youtube_cookies.txt"
 
+    
     command = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
@@ -268,15 +269,6 @@ def download_vod(job_id: str):
         "--paths", f"temp:{temp_dir}",
         "-o", output_template
     ]
-
-    if is_youtube:
-        if not cookie_path.is_file():
-            raise HTTPException(
-                400,
-                "YouTube cookies have not been uploaded yet"
-            )
-
-        command.extend(["--cookies", str(cookie_path)])
 
     command.append(job["vod_url"])
 
