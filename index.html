@@ -251,6 +251,8 @@ async function loadClips(){
   </div>`).join('')||'No rendered exports yet.';
 }
 
+$('#jobSelect').addEventListener('change',loadClips);
+ 
 }
 
 $('#jobForm').addEventListener('submit',async e=>{
