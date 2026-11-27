@@ -93,6 +93,51 @@ init_db()
 def health():
     return {"ok": True, "app": "ClipAura Studio", "version": "3.0.0"}
 
+@app.post("/api/settings/youtube-cookies")
+async def upload_youtube_cookies(
+    cookies: UploadFile = File(...),
+    token: str = Header(default="", alias="X-ClipAura-Admin-Token")
+):
+    expected_token = os.environ.get("CLIPAURA_ADMIN_TOKEN", "")
+
+    if not expected_token:
+        raise HTTPException(503, "Admin token is not configured")
+
+    if not secrets.compare_digest(token, expected_token):
+        raise HTTPException(401, "Invalid admin token")
+
+    if Path(cookies.filename or "").suffix.lower() != ".txt":
+        raise HTTPException(400, "Upload a Netscape cookies .txt file")
+
+    content = await cookies.read(2 * 1024 * 1024 + 1)
+
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(413, "Cookie file is too large")
+
+    text_content = content.decode("utf-8", errors="replace")
+
+    if not any(
+        marker in text_content
+        for marker in (
+            "# Netscape HTTP Cookie File",
+            "# HTTP Cookie File"
+        )
+    ):
+        raise HTTPException(400, "Invalid Netscape cookie file")
+
+    cookie_path = DATA / "youtube_cookies.txt"
+    temporary_path = DATA / "youtube_cookies.tmp"
+
+    temporary_path.write_bytes(content)
+    os.chmod(temporary_path, 0o600)
+    temporary_path.replace(cookie_path)
+    os.chmod(cookie_path, 0o600)
+
+    return {
+        "ok": True,
+        "message": "YouTube cookies securely saved"
+    }
+
 
 @app.get("/api/jobs")
 def list_jobs():
