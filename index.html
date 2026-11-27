@@ -288,8 +288,8 @@ async function analyseVod(id){
  message('Analysing the VOD. Keep the app open.');
  try{
   const result=await api(`/api/jobs/${id}/analyse`,{method:'POST'});
-  await loadClips();message(`Analysis complete. ${result.candidates_created} distinct timestamp candidates created.`);
-  switchTab('review');
+$('#jobSelect').value=id;
+await loadClips();
  }catch(error){message('Analysis failed: '+error.message)}
  finally{if(button){button.disabled=false;button.textContent='⚡ ANALYSE VOD'}}
 }
