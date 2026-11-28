@@ -1067,7 +1067,7 @@ async def upload_clip(clip_id: str, video: UploadFile = File(...)):
 
 
 def detect_facecam_region(video_path: str, seek_time: float, duration: float):
-    """Sample frames and find a face consistently located in one screen corner."""
+    """Detect a facecam corner and return a compact diagnostic report."""
     try:
         import cv2
     except ImportError:
@@ -1076,21 +1076,45 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
     detector = cv2.CascadeClassifier(cascade_path)
     if detector.empty():
         raise HTTPException(503, "Face detector could not be loaded.")
+
     votes = {"top_left": [], "top_right": [], "bottom_left": [], "bottom_right": []}
-    samples = sorted(set([0.5, max(0.5, duration * 0.25), max(0.5, duration * 0.5), max(0.5, duration * 0.75)]))
+    samples = sorted(set([0.5, max(0.5, duration * 0.2), max(0.5, duration * 0.4),
+                          max(0.5, duration * 0.6), max(0.5, duration * 0.8)]))
+    frame_reports = []
+    frames_read = 0
+
     for offset in samples:
         at = max(0, seek_time + min(offset, max(0, duration - 0.2)))
-        proc = subprocess.run(
-            ["ffmpeg", "-v", "error", "-ss", str(at), "-i", video_path, "-frames:v", "1", "-vf", "scale=960:-1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
-            capture_output=True, timeout=30
-        )
-        if proc.returncode != 0 or not proc.stdout:
+        report = {"offset_seconds": round(offset, 2), "source_seconds": round(at, 2),
+                  "frame_read": False, "frame_size": None, "faces": []}
+        try:
+            proc = subprocess.run(
+                ["ffmpeg", "-v", "error", "-ss", str(at), "-i", video_path,
+                 "-frames:v", "1", "-vf", "scale=1280:-1", "-f", "image2pipe",
+                 "-vcodec", "mjpeg", "-"],
+                capture_output=True, timeout=30
+            )
+        except Exception as exc:
+            report["read_error"] = str(exc)[:180]
+            frame_reports.append(report)
             continue
+        if proc.returncode != 0 or not proc.stdout:
+            report["read_error"] = (proc.stderr or b"").decode("utf-8", "replace")[:180] or "FFmpeg returned no frame"
+            frame_reports.append(report)
+            continue
+
         frame = cv2.imdecode(bytearray(proc.stdout), cv2.IMREAD_GRAYSCALE)
         if frame is None:
+            report["read_error"] = "OpenCV could not decode the extracted frame"
+            frame_reports.append(report)
             continue
+
+        frames_read += 1
         height, width = frame.shape[:2]
-        faces = detector.detectMultiScale(frame, scaleFactor=1.1, minNeighbors=5, minSize=(36, 36))
+        report["frame_read"] = True
+        report["frame_size"] = {"width": int(width), "height": int(height)}
+        enhanced = cv2.equalizeHist(frame)
+        faces = detector.detectMultiScale(enhanced, scaleFactor=1.1, minNeighbors=5, minSize=(36, 36))
         for x, y, w, h in faces:
             cx, cy = x + w / 2, y + h / 2
             if cx < width * 0.48 and cy < height * 0.48:
@@ -1102,16 +1126,40 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
             elif cx > width * 0.52 and cy > height * 0.52:
                 corner = "bottom_right"
             else:
-                continue
-            votes[corner].append(float(w * h))
+                corner = "center"
+            if corner != "center":
+                votes[corner].append(float(w * h))
+            report["faces"].append({
+                "box": {"x": int(x), "y": int(y), "width": int(w), "height": int(h)},
+                "center": {"x": round(float(cx), 1), "y": round(float(cy), 1)},
+                "corner": corner
+            })
+        frame_reports.append(report)
+
     ranked = sorted(((len(v), sum(v), k) for k, v in votes.items()), reverse=True)
     count, area, corner = ranked[0]
     total = sum(len(v) for v in votes.values())
+    corner_counts = {k: len(v) for k, v in votes.items()}
+    diagnostics = {
+        "frames_requested": len(samples),
+        "frames_read": frames_read,
+        "face_detections": total,
+        "corner_votes": corner_counts,
+        "samples": frame_reports
+    }
     if count < 2 or total == 0:
-        return {"detected": False, "confidence": 0, "message": "No consistent facecam was detected. Choose a corner manually or use Full frame."}
-    confidence = round(min(0.99, (count / max(1, len(samples))) * 0.65 + (area / max(1, sum(sum(v) for v in votes.values()))) * 0.35), 2)
-    return {"detected": True, "position": corner, "confidence": confidence, "samples_with_face": count, "samples_checked": len(samples)}
-
+        return {
+            "detected": False, "confidence": 0,
+            "message": "No consistent facecam was detected. The diagnostic report shows whether frames loaded and where faces were found.",
+            "diagnostics": diagnostics
+        }
+    confidence = round(min(0.99, (count / max(1, frames_read)) * 0.65 +
+                           (area / max(1, sum(sum(v) for v in votes.values()))) * 0.35), 2)
+    return {
+        "detected": True, "position": corner, "confidence": confidence,
+        "samples_with_face": count, "samples_checked": frames_read,
+        "diagnostics": diagnostics
+    }
 
 def facecam_stack_filter(position: str):
     # Facecam crop is the selected 45% corner region; gameplay remains the full source.
