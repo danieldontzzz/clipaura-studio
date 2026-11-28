@@ -716,7 +716,7 @@ async function loadCinematicShots(){
 function renderCinematicShots(){
  const root=$('#cinematicShots');
  if(!cinematicShots.length){root.innerHTML='No footage yet. Upload your first source above.';return}
- root.innerHTML=cinematicShots.map((s,i)=>'<div class="item" style="margin:12px 0"><div class="itemhead"><b>SHOT '+(i+1)+' · '+esc(s.filename)+'</b><span class="status">'+Number(s.duration).toFixed(1)+'s source</span></div><div class="grid"><div><label>IN (SECONDS)</label><input type="number" min="0" max="'+Number(s.duration).toFixed(3)+'" step="0.1" value="'+Number(s.start_seconds).toFixed(1)+'" data-shot-start="'+esc(s.id)+'"></div><div><label>OUT (SECONDS)</label><input type="number" min="0.1" max="'+Number(s.duration).toFixed(3)+'" step="0.1" value="'+Number(s.end_seconds).toFixed(1)+'" data-shot-end="'+esc(s.id)+'"></div></div><p class="muted">Selected duration: '+(Number(s.end_seconds)-Number(s.start_seconds)).toFixed(1)+' seconds</p><div class="actions"><button type="button" data-shot-up="'+esc(s.id)+'" '+(i===0?'disabled':'')+'>↑ MOVE UP</button><button type="button" data-shot-down="'+esc(s.id)+'" '+(i===cinematicShots.length-1?'disabled':'')+'>↓ MOVE DOWN</button><button type="button" class="danger" data-shot-delete="'+esc(s.id)+'">REMOVE SHOT</button></div></div>').join('');
+ root.innerHTML=cinematicShots.map((s,i)=>'<div class="item" style="margin:12px 0"><div class="itemhead"><b>SHOT '+(i+1)+' · '+esc(s.filename)+'</b><span class="status">'+Number(s.duration).toFixed(1)+'s source</span></div><div class="grid"><div><label>IN (SECONDS)</label><input type="number" min="0" max="'+Number(s.duration).toFixed(3)+'" step="0.1" value="'+Number(s.start_seconds).toFixed(1)+'" data-shot-start="'+esc(s.id)+'"></div><div><label>OUT (SECONDS)</label><input type="number" min="0.1" max="'+Number(s.duration).toFixed(3)+'" step="0.1" value="'+Number(s.end_seconds).toFixed(1)+'" data-shot-end="'+esc(s.id)+'"></div></div><p class="muted">Selected duration: '+(Number(s.end_seconds)-Number(s.start_seconds)).toFixed(1)+' seconds</p><div class="actions"><button type="button" data-shot-up="'+esc(s.id)+'" '+(i===0?'disabled':'')+'>↑ MOVE UP</button><button type="button" data-shot-down="'+esc(s.id)+'" '+(i===cinematicShots.length-1?'disabled':'')+'>↓ MOVE DOWN</button><button type="button" data-shot-duplicate="'+esc(s.id)+'">＋ DUPLICATE SOURCE</button><button type="button" class="danger" data-shot-delete="'+esc(s.id)+'">REMOVE SHOT</button></div></div>').join('');
 }
 $('#cinematicProjectForm').addEventListener('submit',async e=>{
  e.preventDefault();
@@ -752,7 +752,12 @@ $('#cinematicShots').addEventListener('change',async e=>{
 });
 $('#cinematicShots').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b)return;
- const del=b.dataset.shotDelete,up=b.dataset.shotUp,down=b.dataset.shotDown;
+ const del=b.dataset.shotDelete,up=b.dataset.shotUp,down=b.dataset.shotDown,duplicate=b.dataset.shotDuplicate;
+ if(duplicate){
+  b.disabled=true;b.textContent="DUPLICATING...";
+  try{await api("/api/cinematic/shots/"+encodeURIComponent(duplicate)+"/duplicate",{method:"POST"});await loadCinematicShots();await loadCinematicProjects();message("Added another editable segment from the same source video.");}
+  catch(err){message("Could not duplicate source segment: "+err.message);b.disabled=false;b.textContent="＋ DUPLICATE SOURCE";}
+ }
  if(del){
   if(!confirm('Remove this source from the montage?'))return;
   try{await api('/api/cinematic/shots/'+encodeURIComponent(del),{method:'DELETE'});await loadCinematicShots();await loadCinematicProjects()}catch(err){message(err.message)}
