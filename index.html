@@ -137,6 +137,9 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
    <div class="actions"><button class="primary" type="submit">ADD MANUAL CANDIDATE</button></div>
   </form>
   <hr>
+  <label>OPTIONAL FULL-VIDEO IMAGE OVERLAY</label>
+  <select id="renderOverlaySelect"><option value="">No overlay</option></select>
+  <p class="muted">Choose a stored transparent campaign logo to place it on every frame, lower-middle.</p>
   <div id="clipsList"></div>
  </div>
 </section>
@@ -336,6 +339,7 @@ async function openGoogleImagePicker(){
 async function loadAssets(){
  try{
   assets=await api('/api/assets');
+  $('#renderOverlaySelect').innerHTML='<option value="">No overlay</option>'+assets.map(asset=>`<option value="${esc(asset.asset_id)}">${esc(asset.filename)}</option>`).join('');
   $('#assetsList').innerHTML=assets.map(asset=>`
    <div class="item">
     <img src="${esc(asset.url)}" alt="${esc(asset.filename)}" style="width:100%;max-height:210px;object-fit:contain;background:#090611;border-radius:10px">
@@ -478,6 +482,8 @@ async function renderClip(id){
  const data=new FormData();
  data.append('start','0');
  data.append('end',String(duration));
+ const overlay=$('#renderOverlaySelect')?.value||'';
+ if(overlay)data.append('asset_id',overlay);
  message('Extracting this moment from the original VOD and rendering vertical MP4...');
  try{
   const result=await api(`/api/clips/${id}/render`,{method:'POST',body:data});
