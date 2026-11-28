@@ -19,7 +19,7 @@ import re
 import httpx
 
 from fastapi import Request, Body
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.responses import FileResponse
@@ -1339,6 +1339,72 @@ def detect_facecam(clip_id: str):
         logging.exception("Facecam detection crashed for clip_id=%s", clip_id)
         detail = f"Facecam detection crashed: {type(exc).__name__}: {str(exc)[:300]}"
         raise HTTPException(500, detail)
+
+
+@app.get("/api/clips/{clip_id}/facecam-preview")
+def facecam_preview(
+    clip_id: str,
+    x: float,
+    y: float,
+    width: float,
+    height: float
+):
+    """Return a representative frame with the estimated facecam crop outlined."""
+    with conn() as c:
+        clip = c.execute(
+            "SELECT clips.*, jobs.vod_path FROM clips JOIN jobs ON jobs.id=clips.job_id WHERE clips.id=?",
+            (clip_id,)
+        ).fetchone()
+    if not clip:
+        raise HTTPException(404, "Clip not found")
+
+    if clip["file_path"] and Path(clip["file_path"]).is_file():
+        video_path = clip["file_path"]
+        seek_time = max(0.0, float(clip["duration"] or 18) / 2)
+    elif clip["vod_path"] and Path(clip["vod_path"]).is_file():
+        video_path = clip["vod_path"]
+        seek_time = max(0.0, float(clip["start_seconds"] or 0) + float(clip["duration"] or 18) / 2)
+    else:
+        raise HTTPException(400, "Original video is missing")
+
+    if not all(math.isfinite(v) for v in (x, y, width, height)):
+        raise HTTPException(400, "Invalid preview rectangle")
+    if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > 1.001 or y + height > 1.001:
+        raise HTTPException(400, "Preview rectangle is outside the video")
+
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(seek_time), "-i", video_path,
+             "-frames:v", "1", "-vf", "scale=1280:-1", "-f", "image2pipe",
+             "-vcodec", "mjpeg", "-"],
+            capture_output=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Facecam preview timed out")
+    if proc.returncode != 0 or not proc.stdout:
+        raise HTTPException(500, "Could not extract a preview frame")
+
+    try:
+        import cv2
+        import numpy as np
+        frame = cv2.imdecode(np.frombuffer(proc.stdout, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError("Could not decode preview frame")
+        h, w = frame.shape[:2]
+        x1, y1 = int(x * w), int(y * h)
+        x2, y2 = int((x + width) * w), int((y + height) * h)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 255, 80), max(3, w // 320))
+        cv2.putText(frame, "ESTIMATED FACECAM", (x1, max(28, y1 - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (80, 255, 80), 2, cv2.LINE_AA)
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        if not ok:
+            raise ValueError("Could not encode preview frame")
+        return Response(content=encoded.tobytes(), media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Could not draw facecam preview: {str(exc)[:180]}")
 
 
 @app.post("/api/clips/{clip_id}/render")
