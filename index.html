@@ -78,6 +78,7 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
  <button class="tab" data-tab="review">CLIP REVIEW</button>
  <button class="tab" data-tab="exports">EXPORTS</button>
  <button class="tab" data-tab="assets">ASSETS</button>
+ <button class="tab" data-tab="storage">STORAGE</button>
 </div>
 
 <section id="queue">
@@ -167,6 +168,16 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
  </div>
 </section>
 
+<section id="storage" class="hidden">
+ <div class="panel">
+  <h2>Storage Manager</h2>
+  <p class="muted">Review files stored on ClipAura and delete items you no longer need. Deleting a source VOD keeps its job and clip notes, but removes the downloaded video.</p>
+  <div class="stats"><div class="stat"><b id="storageTotal">—</b><small>STORAGE USED</small></div><div class="stat"><b id="storageCount">—</b><small>FILES</small></div><div class="stat"><b id="storageExports">—</b><small>EXPORTS</small></div></div>
+  <div class="actions"><button class="secondary" id="refreshStorage">↻ REFRESH STORAGE</button></div>
+  <div id="storageList" class="muted">Loading storage...</div>
+ </div>
+</section>
+
 <footer>CLIPAURAVAULT STUDIO · BUILT FOR CREATORS · APPROVAL FIRST</footer>
 </main>
 
@@ -207,6 +218,7 @@ function switchTab(tab){
  ['queue','review','exports','assets'].forEach(name=>$('#'+name).classList.toggle('hidden',name!==tab));
  if(tab==='review'||tab==='exports')loadClips();
  if(tab==='assets')loadAssets();
+  if(tab==='storage')loadStorage();
 }
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 
@@ -356,6 +368,23 @@ async function loadAssets(){
  }catch(error){$('#assetsList').textContent='Could not load assets: '+error.message}
 }
 $('#googleImageImport').addEventListener('click',openGoogleImagePicker);
+
+
+function formatBytes(bytes){if(!bytes)return '0 B';const u=['B','KB','MB','GB','TB'];let n=bytes,i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
+async function loadStorage(){
+ const list=$('#storageList');list.textContent='Scanning managed storage...';
+ try{const data=await api('/api/storage');$('#storageTotal').textContent=formatBytes(data.total_bytes);$('#storageCount').textContent=data.file_count;$('#storageExports').textContent=data.items.filter(x=>x.kind==='export'||x.kind==='orphan_export').length;
+ list.innerHTML=data.items.map(item=>'<div class="item"><div class="itemhead"><b>'+esc(item.label||item.filename)+'</b><span class="status">'+esc(item.kind.replaceAll('_',' '))+'</span></div><p class="muted">'+[item.detail,item.filename,formatBytes(item.bytes)].filter(Boolean).map(esc).join(' · ')+'</p><button class="danger" type="button" data-storage-kind="'+esc(item.kind)+'" data-storage-id="'+esc(item.id)+'">DELETE FILE</button></div>').join('')||'No managed files found.';
+ }catch(error){list.textContent='Could not load storage: '+error.message}
+}
+async function deleteStorageItem(kind,id,button){
+ if(!confirm('Permanently delete this stored file? This cannot be undone.'))return;
+ button.disabled=true;button.textContent='DELETING...';
+ try{await api('/api/storage/'+encodeURIComponent(kind)+'/'+encodeURIComponent(id),{method:'DELETE'});message('File deleted from ClipAura storage.');await loadStorage();await loadJobs();await loadClips();await loadAssets()}
+ catch(error){message('Delete failed: '+error.message);button.disabled=false;button.textContent='DELETE FILE'}
+}
+$('#refreshStorage').addEventListener('click',loadStorage);
+$('#storageList').addEventListener('click',e=>{const b=e.target.closest('[data-storage-kind]');if(b)deleteStorageItem(b.dataset.storageKind,b.dataset.storageId,b)});
 
 async function shareAssetForInspection(assetId,button){
  const original=button.textContent;
