@@ -1840,9 +1840,20 @@ def cinematic_render(project_id: str, asset_id: str = Form("")):
     concat_inputs = []
     for i, s in enumerate(shots):
         dur = float(s["end_seconds"]) - float(s["start_seconds"])
+        # Read the source's declared range so full-range iPhone/iPad HEVC
+        # (yuvj420p / color_range=pc) is converted deliberately to limited-range
+        # yuv420p for the H.264 delivery file. Unknown sources are left to auto.
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=color_range",
+             "-of", "default=noprint_wrappers=1:nokey=1", s["file_path"]],
+            capture_output=True, text=True, timeout=30
+        )
+        source_range = (probe.stdout.strip().lower() if probe.returncode == 0 else "")
+        range_in = {"pc": "pc", "jpeg": "pc", "tv": "tv", "mpeg": "tv"}.get(source_range, "auto")
         filters.append(
             f"[{i}:v]trim=start={float(s['start_seconds']):.3f}:duration={dur:.3f},"
-            "setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=increase:in_range={range_in}:out_range=tv,"
             "crop=1080:1920,setsar=1,fps=30,format=yuv420p"
             f"[v{i}]"
         )
@@ -1865,6 +1876,8 @@ def cinematic_render(project_id: str, asset_id: str = Form("")):
     command += ["-filter_complex", ";".join(filters), "-map", video_map,
                 "-t", f"{total_duration:.3f}", "-an", "-c:v", "libx264",
                 "-preset", "veryfast", "-crf", "20", "-threads", "2",
+                "-color_range", "tv", "-colorspace", "bt709",
+                "-color_primaries", "bt709", "-color_trc", "bt709",
                 "-movflags", "+faststart", str(output)]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=1800)
