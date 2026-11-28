@@ -183,9 +183,13 @@ function message(text){
 
 async function api(path,opts={}){
  const response=await fetch(path,opts);
+ const raw=await response.text();
  let data={};
- try{data=await response.json()}catch{}
- if(!response.ok)throw Error(data.detail||'Something went wrong');
+ try{data=raw?JSON.parse(raw):{}}catch{data={raw}}
+ if(!response.ok){
+  const detail=data.detail||data.message||(data.raw?String(data.raw).replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim().slice(0,260):'');
+  throw Error(detail||('Request failed (HTTP '+response.status+')'));
+ }
  return data;
 }
 
