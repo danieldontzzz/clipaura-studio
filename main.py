@@ -14,8 +14,11 @@ import shutil
 import hashlib
 import hmac
 import time
+import re
 
-from fastapi import Request
+import httpx
+
+from fastapi import Request, Body
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
@@ -224,6 +227,131 @@ def health():
         "ok": True,
         "app": "ClipAura Studio",
         "version": "3.0.0"
+    }
+
+
+@app.get("/api/google/config")
+def google_picker_config():
+    values = {
+        "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+        "api_key": os.environ.get("GOOGLE_API_KEY", ""),
+        "project_number": os.environ.get("GOOGLE_PROJECT_NUMBER", "")
+    }
+    if not all(values.values()):
+        raise HTTPException(
+            503,
+            "Google Drive is not configured yet. Add GOOGLE_CLIENT_ID, GOOGLE_API_KEY and GOOGLE_PROJECT_NUMBER in Railway Variables."
+        )
+    return values
+
+
+@app.post("/api/drive/import")
+async def import_google_drive_video(
+    payload: dict = Body(...),
+    authorization: str = Header(default="", alias="Authorization")
+):
+    access_token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    file_id = str(payload.get("file_id", "")).strip()
+
+    if not access_token:
+        raise HTTPException(401, "Google authorization is missing. Connect Google Drive and try again.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
+        raise HTTPException(400, "The selected Google Drive file ID is invalid.")
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    metadata_url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+    timeout = httpx.Timeout(180.0, connect=25.0)
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        metadata_response = await client.get(
+            metadata_url,
+            params={"fields": "id,name,mimeType,size"},
+            headers=headers
+        )
+        if metadata_response.status_code == 401:
+            raise HTTPException(401, "Google authorization expired. Choose the video again.")
+        if metadata_response.status_code == 403:
+            raise HTTPException(403, "Google Drive did not grant access to this file. Re-select it in the Google Picker.")
+        if metadata_response.status_code == 404:
+            raise HTTPException(404, "That Google Drive video could not be found.")
+        if metadata_response.status_code != 200:
+            raise HTTPException(502, "Google Drive could not provide the selected file details.")
+
+        metadata = metadata_response.json()
+        mime_type = str(metadata.get("mimeType", ""))
+        if not mime_type.startswith("video/"):
+            raise HTTPException(400, "Please select a video file from Google Drive.")
+
+        original_name = str(metadata.get("name") or "drive-video")
+        safe_stem = Path(original_name).stem[:100]
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".mpeg", ".mpg"}:
+            suffix = ".mp4"
+
+        declared_size = int(metadata.get("size") or 0)
+        max_bytes = 4 * 1024 * 1024 * 1024
+        if declared_size > max_bytes:
+            raise HTTPException(413, "This video is larger than ClipAura's 4 GB import limit.")
+
+        job_id = str(uuid4())
+        destination = UPLOADS / f"{job_id}_drive_{secrets.token_hex(4)}{suffix}"
+        temporary = destination.with_suffix(destination.suffix + ".part")
+        total = 0
+
+        try:
+            async with client.stream(
+                "GET",
+                metadata_url,
+                params={"alt": "media"},
+                headers=headers
+            ) as media_response:
+                if media_response.status_code == 401:
+                    raise HTTPException(401, "Google authorization expired. Choose the video again.")
+                if media_response.status_code == 403:
+                    raise HTTPException(403, "Google Drive refused access to the video. Re-select it in the Picker.")
+                if media_response.status_code != 200:
+                    raise HTTPException(502, "Google Drive could not download the selected video.")
+
+                with open(temporary, "wb") as output:
+                    async for chunk in media_response.aiter_bytes(chunk_size=1024 * 1024):
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise HTTPException(413, "This video exceeds ClipAura's 4 GB import limit.")
+                        output.write(chunk)
+
+            if total == 0:
+                raise HTTPException(400, "Google Drive returned an empty video.")
+            temporary.replace(destination)
+            os.chmod(destination, 0o600)
+
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
+
+    creator = "Google Drive"
+    notes = f"Imported from Google Drive: {original_name}"
+    drive_url = f"https://drive.google.com/file/d/{file_id}/view"
+
+    try:
+        with conn() as c:
+            c.execute(
+                """
+                INSERT INTO jobs(id, creator, vod_url, notes, status, vod_path)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (job_id, creator, drive_url, notes, "vod_downloaded", str(destination))
+            )
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(500, "The video downloaded, but ClipAura could not add it to the VOD Vault.")
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "filename": original_name,
+        "bytes": total,
+        "status": "vod_downloaded"
     }
 
 
