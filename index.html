@@ -541,8 +541,10 @@ async function reject(id){
 const facecamSelections = {};
 const facecamDragState = {};
 function previewUrl(id,region){
- const params=new URLSearchParams({x:region.x,y:region.y,width:region.width,height:region.height});
- return '/api/clips/'+encodeURIComponent(id)+'/facecam-preview?'+params.toString()+'&v='+Date.now();
+ const params=new URLSearchParams();
+ if(region)Object.entries(region).forEach(([key,value])=>params.set(key,String(value)));
+ const query=params.toString();
+ return '/api/clips/'+encodeURIComponent(id)+'/facecam-preview'+(query?'?'+query+'&':'?')+'v='+Date.now();
 }
 function setFacecamSelection(id,region){
  facecamSelections[id]=region;
@@ -582,18 +584,23 @@ async function detectFacecam(id){
  try{
   const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'}),d=r.diagnostics||{};
   const summary='Facecam scan: '+(r.detected?(r.position+' · '+Math.round(r.confidence*100)+'% confidence'):'not detected')+' · '+(d.frames_with_face??0)+' of '+(d.frames_read??0)+' frames contained faces';
-  if(r.detected&&r.webcam_region){
-   $('#facecamPositionSelect').value=r.position;
-   const preview=document.getElementById('facecamPreview-'+id);
-   if(preview){
-    const status=preview.querySelector('.preview-status'),img=preview.querySelector('img');
-    preview.classList.remove('hidden');attachFacecamSelection(preview,id);
-    status.textContent=summary+' · Loading frame. Drag to adjust the green rectangle.';
+  const preview=document.getElementById('facecamPreview-'+id);
+  if(preview){
+   const status=preview.querySelector('.preview-status'),img=preview.querySelector('img');
+   preview.classList.remove('hidden');attachFacecamSelection(preview,id);
+   if(r.detected&&r.webcam_region){
+    $('#facecamPositionSelect').value=r.position;
+    status.textContent=summary+' · Loading automatic suggestion. You can drag to adjust it.';
     img.onload=()=>{status.textContent=summary+' · Automatic suggestion shown. Touch and drag to select the exact webcam area.';preview.scrollIntoView({behavior:'smooth',block:'center'})};
-    img.onerror=()=>{status.textContent='Preview frame failed to load. Please do not render yet.'};
     setFacecamSelection(id,r.webcam_region);
-   }else message(summary+' · Preview panel not found. Refresh after deployment.');
-  }else message(summary+' · No reliable automatic crop found. Try a section where the webcam stays visible.');
+   }else{
+    delete facecamSelections[id];
+    status.textContent=summary+' · Automatic scan missed this one. Loading a clean frame — touch and drag a rectangle around the streamer webcam manually.';
+    img.onload=()=>{status.textContent=summary+' · No automatic box was found. Draw your own rectangle around the whole webcam, then render.';preview.scrollIntoView({behavior:'smooth',block:'center'})};
+    img.src=previewUrl(id,null);
+   }
+   img.onerror=()=>{status.textContent='Preview frame failed to load. Please do not render yet.'};
+  }else message(summary+' · Preview panel not found. Refresh after deployment.');
  }catch(e){message('Facecam detection or preview failed: '+e.message)}
  finally{if(button){button.disabled=false;button.textContent='DETECT FACECAM'}}
 }
