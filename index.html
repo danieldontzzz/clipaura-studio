@@ -79,7 +79,42 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
  <button class="tab" data-tab="exports">EXPORTS</button>
  <button class="tab" data-tab="assets">ASSETS</button>
  <button class="tab" data-tab="storage">STORAGE</button>
+ <button class="tab" data-tab="cinematic">CINEMATIC EDITOR</button>
 </div>
+
+
+<section id="cinematic" class="hidden">
+ <div class="panel">
+  <h2>🎬 Cinematic Editor</h2>
+  <p class="muted">Build a multi-shot vertical montage from video files. Upload sources, set each shot's in/out points, arrange their order and export a 1080 × 1920 MP4.</p>
+  <form id="cinematicProjectForm">
+   <label>PROJECT NAME</label>
+   <input name="title" value="WELCOME TO LEONIDA" maxlength="120" required>
+   <div class="actions"><button class="primary" type="submit">＋ CREATE CINEMATIC PROJECT</button></div>
+  </form>
+  <label>SELECT PROJECT</label><select id="cinematicProjectSelect"><option value="">Create a project first</option></select>
+ </div>
+ <div class="panel" id="cinematicWorkspace">
+  <h2>01 — Add your footage</h2>
+  <p class="muted">Choose multiple video files from your iPad. Each source is stored privately in ClipAura. MP4 and MOV recommended; maximum 2 GB per source.</p>
+  <input id="cinematicFiles" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.m4v,.webm,.mkv" multiple>
+  <div class="actions"><button class="primary" id="cinematicUpload" type="button">UPLOAD SELECTED FOOTAGE</button></div>
+  <div id="cinematicUploadStatus" class="muted"></div>
+ </div>
+ <div class="panel">
+  <h2>02 — Arrange and trim shots</h2>
+  <p class="muted">New uploads start as six-second shots. Adjust start/end seconds and move shots up or down to set the sequence.</p>
+  <div id="cinematicShots" class="muted">Choose or create a project to load its shots.</div>
+ </div>
+ <div class="panel">
+  <h2>03 — Campaign overlay and export</h2>
+  <label>OPTIONAL FULL-VIDEO IMAGE OVERLAY</label>
+  <select id="cinematicOverlay"><option value="">No overlay</option></select>
+  <p class="muted">The overlay is placed at the lower-middle position for the full montage. Stage-one export is silent; music, sound effects and transitions are the next editor upgrade.</p>
+  <div class="actions"><button class="primary" id="cinematicRender" type="button">RENDER CINEMATIC MP4</button></div>
+  <div id="cinematicExport" class="muted"></div>
+ </div>
+</section>
 
 <section id="queue">
  <div class="panel">
@@ -215,10 +250,11 @@ function timecode(value){
 
 function switchTab(tab){
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
- ['queue','review','exports','assets','storage'].forEach(name=>$('#'+name).classList.toggle('hidden',name!==tab));
+ ['queue','review','exports','assets','storage','cinematic'].forEach(name=>$('#'+name).classList.toggle('hidden',name!==tab));
  if(tab==='review'||tab==='exports')loadClips();
  if(tab==='assets')loadAssets();
   if(tab==='storage')loadStorage();
+ if(tab==='cinematic'){loadCinematicProjects();loadAssets().then(()=>populateCinematicOverlays());}
 }
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
 
@@ -650,6 +686,95 @@ document.addEventListener('click',async event=>{
  if(action==='copy')copyLink(button.dataset.url);
  if(action==='clips')openClips(id);
  if(action==='review')switchTab('review');
+});
+
+
+let cinematicProjects=[];
+let cinematicShots=[];
+let cinematicProjectId="";
+async function loadCinematicProjects(){
+ try{
+  cinematicProjects=await api('/api/cinematic/projects');
+  const select=$('#cinematicProjectSelect'),current=select.value||cinematicProjectId;
+  select.innerHTML='<option value="">Select a cinematic project</option>'+cinematicProjects.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.title)+' · '+p.shot_count+' shots</option>').join('');
+  if(current&&cinematicProjects.some(p=>p.id===current))select.value=current;
+  else if(cinematicProjects.length){select.value=cinematicProjects[0].id;cinematicProjectId=select.value}
+  if(select.value){cinematicProjectId=select.value;await loadCinematicShots()}
+ }catch(e){message('Could not load cinematic projects: '+e.message)}
+}
+async function populateCinematicOverlays(){
+ const assetsNow=assets||[];
+ $('#cinematicOverlay').innerHTML='<option value="">No overlay</option>'+assetsNow.map(a=>'<option value="'+esc(a.asset_id)+'">'+esc(a.filename)+'</option>').join('');
+}
+async function loadCinematicShots(){
+ if(!cinematicProjectId){$('#cinematicShots').textContent='Create a project first.';return}
+ try{
+  cinematicShots=await api('/api/cinematic/projects/'+encodeURIComponent(cinematicProjectId)+'/shots');
+  renderCinematicShots();
+ }catch(e){$('#cinematicShots').textContent='Could not load shots: '+e.message}
+}
+function renderCinematicShots(){
+ const root=$('#cinematicShots');
+ if(!cinematicShots.length){root.innerHTML='No footage yet. Upload your first source above.';return}
+ root.innerHTML=cinematicShots.map((s,i)=>'<div class="item" style="margin:12px 0"><div class="itemhead"><b>SHOT '+(i+1)+' · '+esc(s.filename)+'</b><span class="status">'+Number(s.duration).toFixed(1)+'s source</span></div><div class="grid"><div><label>IN (SECONDS)</label><input type="number" min="0" max="'+Number(s.duration).toFixed(3)+'" step="0.1" value="'+Number(s.start_seconds).toFixed(1)+'" data-shot-start="'+esc(s.id)+'"></div><div><label>OUT (SECONDS)</label><input type="number" min="0.1" max="'+Number(s.duration).toFixed(3)+'" step="0.1" value="'+Number(s.end_seconds).toFixed(1)+'" data-shot-end="'+esc(s.id)+'"></div></div><p class="muted">Selected duration: '+(Number(s.end_seconds)-Number(s.start_seconds)).toFixed(1)+' seconds</p><div class="actions"><button type="button" data-shot-up="'+esc(s.id)+'" '+(i===0?'disabled':'')+'>↑ MOVE UP</button><button type="button" data-shot-down="'+esc(s.id)+'" '+(i===cinematicShots.length-1?'disabled':'')+'>↓ MOVE DOWN</button><button type="button" class="danger" data-shot-delete="'+esc(s.id)+'">REMOVE SHOT</button></div></div>').join('');
+}
+$('#cinematicProjectForm').addEventListener('submit',async e=>{
+ e.preventDefault();
+ try{const r=await api('/api/cinematic/projects',{method:'POST',body:fd(e.target)});cinematicProjectId=r.id;await loadCinematicProjects();$('#cinematicProjectSelect').value=r.id;cinematicProjectId=r.id;await loadCinematicShots();message('Cinematic project created. Upload your source videos next.')}
+ catch(err){message('Project creation failed: '+err.message)}
+});
+$('#cinematicProjectSelect').addEventListener('change',async e=>{cinematicProjectId=e.target.value;await loadCinematicShots()});
+$('#cinematicUpload').addEventListener('click',async()=>{
+ const files=Array.from($('#cinematicFiles').files||[]);
+ if(!cinematicProjectId)return message('Create or select a cinematic project first.');
+ if(!files.length)return message('Choose at least one video file.');
+ const button=$('#cinematicUpload');button.disabled=true;
+ try{
+  for(let i=0;i<files.length;i++){
+   $('#cinematicUploadStatus').textContent='Uploading '+(i+1)+' of '+files.length+': '+files[i].name;
+   const form=new FormData();form.append('file',files[i]);
+   await api('/api/cinematic/projects/'+encodeURIComponent(cinematicProjectId)+'/upload',{method:'POST',body:form});
+  }
+  $('#cinematicFiles').value='';await loadCinematicProjects();await loadCinematicShots();
+  $('#cinematicUploadStatus').textContent='All selected videos uploaded successfully.';
+  message('Footage imported. Adjust each shot and arrange your sequence.');
+ }catch(err){$('#cinematicUploadStatus').textContent='Upload stopped: '+err.message;message('Footage upload failed: '+err.message)}
+ finally{button.disabled=false}
+});
+async function saveCinematicShot(id){
+ const start=Number(document.querySelector('[data-shot-start="'+id+'"]').value);
+ const end=Number(document.querySelector('[data-shot-end="'+id+'"]').value);
+ try{await api('/api/cinematic/shots/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({start_seconds:start,end_seconds:end})});await loadCinematicShots();return true}
+ catch(e){message('Shot trim not saved: '+e.message);return false}
+}
+$('#cinematicShots').addEventListener('change',async e=>{
+ const id=e.target.dataset.shotStart||e.target.dataset.shotEnd;if(id)await saveCinematicShot(id);
+});
+$('#cinematicShots').addEventListener('click',async e=>{
+ const b=e.target.closest('button');if(!b)return;
+ const del=b.dataset.shotDelete,up=b.dataset.shotUp,down=b.dataset.shotDown;
+ if(del){
+  if(!confirm('Remove this source from the montage?'))return;
+  try{await api('/api/cinematic/shots/'+encodeURIComponent(del),{method:'DELETE'});await loadCinematicShots();await loadCinematicProjects()}catch(err){message(err.message)}
+ }
+ if(up||down){
+  const id=up||down,index=cinematicShots.findIndex(s=>s.id===id),target=index+(up?-1:1);
+  if(index<0||target<0||target>=cinematicShots.length)return;
+  const order=cinematicShots.map(s=>s.id);[order[index],order[target]]=[order[target],order[index]];
+  try{for(let i=0;i<order.length;i++)await api('/api/cinematic/shots/'+encodeURIComponent(order[i]),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({position:i})});await loadCinematicShots()}catch(err){message('Could not reorder shots: '+err.message)}
+ }
+});
+$('#cinematicRender').addEventListener('click',async()=>{
+ if(!cinematicProjectId)return message('Select a project first.');
+ const button=$('#cinematicRender'),status=$('#cinematicExport');
+ button.disabled=true;button.textContent='RENDERING...';status.textContent='Building the 1080 × 1920 montage. Keep this page open.';
+ try{
+  const form=new FormData();if($('#cinematicOverlay').value)form.append('asset_id',$('#cinematicOverlay').value);
+  const r=await api('/api/cinematic/projects/'+encodeURIComponent(cinematicProjectId)+'/render',{method:'POST',body:form});
+  status.innerHTML='Render complete · '+r.shot_count+' shots · '+r.duration_seconds+' sec<br><a href="'+esc(r.download)+'">DOWNLOAD CINEMATIC MP4</a>';
+  message('Cinematic montage exported successfully.');
+ }catch(err){status.textContent='Render failed: '+err.message;message('Cinematic render failed: '+err.message)}
+ finally{button.disabled=false;button.textContent='RENDER CINEMATIC MP4'}
 });
 
 async function start(){
