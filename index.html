@@ -426,7 +426,7 @@ async function loadClips(){
    ${clip.status==='approved'?`
     <p class="muted">${clip.vod_path?'Ready to extract from this original VOD.':'Original VOD unavailable.'}</p>
     <div class="actions">
-     <button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>DETECT FACECAM</button><button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button>
+     <button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button>
     </div>`:''}
   </div>`;
  }).join('')||'No clips for this VOD yet. Select another VOD or analyse this one.';
