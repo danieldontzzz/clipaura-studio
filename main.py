@@ -1538,25 +1538,17 @@ def render_clip(
         "crop=1080:1920,setsar=1,fps=30,format=yuv420p"
     )
 
-    # Keep fast input seeking for the multi-input overlay graph. For a
-    # plain clip, seek after opening the source so FFmpeg decodes accurately
-    # to the requested timestamp instead of relying on keyframe seeking.
-    if asset_id:
-        command = [
-            "ffmpeg", "-y",
-            "-filter_threads", "2",
-            "-filter_complex_threads", "2",
-            "-ss", str(seek_time),
-            "-i", input_path,
-        ]
-    else:
-        command = [
-            "ffmpeg", "-y",
-            "-filter_threads", "2",
-            "-filter_complex_threads", "2",
-            "-i", input_path,
-            "-ss", str(seek_time),
-        ]
+    # Seek on the source input, not on the output timeline. This is
+    # essential for analysed candidates: each clip has its own absolute VOD
+    # timestamp in seek_time. FFmpeg's input seeking remains accurate when
+    # transcoding (the default accurate_seek behaviour).
+    command = [
+        "ffmpeg", "-y",
+        "-filter_threads", "2",
+        "-filter_complex_threads", "2",
+        "-ss", f"{seek_time:.3f}",
+        "-i", input_path,
+    ]
 
     if layout == "facecam_stack" and asset_id:
         raise HTTPException(400, "Campaign overlay is temporarily unavailable with facecam-stack layout; render the stack first.")
