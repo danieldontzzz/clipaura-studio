@@ -226,6 +226,19 @@ def init_db():
 
 init_db()
 
+# Cinematic montage workspace (kept separate from the original VOD clip tables).
+with conn() as c:
+    c.execute("""CREATE TABLE IF NOT EXISTS cinematic_projects (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS cinematic_shots (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, filename TEXT NOT NULL,
+        file_path TEXT NOT NULL, duration REAL NOT NULL DEFAULT 0,
+        start_seconds REAL NOT NULL DEFAULT 0, end_seconds REAL NOT NULL DEFAULT 0,
+        position INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(project_id) REFERENCES cinematic_projects(id)
+    )""")
+
 
 @app.get("/api/health")
 def health():
@@ -1648,6 +1661,187 @@ def download_export(filename: str):
         media_type="video/mp4",
         filename=path.name
     )
+
+
+
+# --- Cinematic Editor API ---
+@app.get("/api/cinematic/projects")
+def cinematic_projects_list():
+    with conn() as c:
+        rows = c.execute("""
+            SELECT p.*, COUNT(s.id) AS shot_count
+            FROM cinematic_projects p LEFT JOIN cinematic_shots s ON s.project_id=p.id
+            GROUP BY p.id ORDER BY p.created_at DESC
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/cinematic/projects")
+def cinematic_project_create(title: str = Form("Untitled cinematic edit")):
+    project_id = str(uuid4())
+    clean_title = (title or "").strip()[:120] or "Untitled cinematic edit"
+    with conn() as c:
+        c.execute("INSERT INTO cinematic_projects(id,title) VALUES(?,?)", (project_id, clean_title))
+    return {"ok": True, "id": project_id, "title": clean_title}
+
+
+@app.get("/api/cinematic/projects/{project_id}/shots")
+def cinematic_shots_list(project_id: str):
+    with conn() as c:
+        project = c.execute("SELECT id FROM cinematic_projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Cinematic project not found.")
+        rows = c.execute("SELECT * FROM cinematic_shots WHERE project_id=? ORDER BY position,created_at", (project_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/cinematic/projects/{project_id}/upload")
+async def cinematic_upload_shot(project_id: str, file: UploadFile = File(...)):
+    with conn() as c:
+        project = c.execute("SELECT id FROM cinematic_projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Cinematic project not found.")
+        count = c.execute("SELECT COUNT(*) AS n FROM cinematic_shots WHERE project_id=?", (project_id,)).fetchone()["n"]
+    suffix = Path(file.filename or "").suffix.lower()
+    allowed = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+    if suffix not in allowed:
+        raise HTTPException(400, "Upload an MP4, MOV, M4V, WEBM or MKV video.")
+    shot_id = str(uuid4())
+    destination = UPLOADS / f"cinematic_{shot_id}{suffix}"
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    total = 0
+    max_bytes = 2 * 1024 * 1024 * 1024
+    try:
+        with open(temporary, "wb") as output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(413, "Each cinematic source is limited to 2 GB.")
+                output.write(chunk)
+        if total == 0:
+            raise HTTPException(400, "The uploaded video is empty.")
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(temporary)
+        ], capture_output=True, text=True, timeout=45)
+        if probe.returncode != 0:
+            raise HTTPException(400, "ClipAura could not read this video. Try an MP4 or MOV.")
+        duration = float(probe.stdout.strip())
+        if not math.isfinite(duration) or duration <= 0 or duration > 7200:
+            raise HTTPException(400, "Video duration is invalid or exceeds two hours.")
+        temporary.replace(destination)
+        os.chmod(destination, 0o600)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+        raise
+    with conn() as c:
+        c.execute("""INSERT INTO cinematic_shots
+            (id,project_id,filename,file_path,duration,start_seconds,end_seconds,position)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (shot_id, project_id, Path(file.filename or "source-video").name[:180],
+             str(destination), duration, 0, min(duration, 6.0), int(count)))
+    return {"ok": True, "id": shot_id, "filename": Path(file.filename or destination.name).name,
+            "duration": duration, "start_seconds": 0, "end_seconds": min(duration, 6.0),
+            "position": int(count)}
+
+
+@app.patch("/api/cinematic/shots/{shot_id}")
+def cinematic_update_shot(shot_id: str, payload: dict = Body(...)):
+    with conn() as c:
+        shot = c.execute("SELECT * FROM cinematic_shots WHERE id=?", (shot_id,)).fetchone()
+        if not shot:
+            raise HTTPException(404, "Shot not found.")
+        start = float(payload.get("start_seconds", shot["start_seconds"]))
+        end = float(payload.get("end_seconds", shot["end_seconds"]))
+        position = int(payload.get("position", shot["position"]))
+        if (not math.isfinite(start) or not math.isfinite(end) or start < 0
+                or end <= start or end > float(shot["duration"]) + 0.05
+                or end - start > 90 or position < 0 or position > 99):
+            raise HTTPException(400, "Check the shot in/out points and order.")
+        c.execute("UPDATE cinematic_shots SET start_seconds=?,end_seconds=?,position=? WHERE id=?",
+                  (start, end, position, shot_id))
+    return {"ok": True}
+
+
+@app.delete("/api/cinematic/shots/{shot_id}")
+def cinematic_delete_shot(shot_id: str):
+    with conn() as c:
+        shot = c.execute("SELECT * FROM cinematic_shots WHERE id=?", (shot_id,)).fetchone()
+        if not shot:
+            raise HTTPException(404, "Shot not found.")
+        c.execute("DELETE FROM cinematic_shots WHERE id=?", (shot_id,))
+    try:
+        Path(shot["file_path"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {"ok": True}
+
+
+@app.post("/api/cinematic/projects/{project_id}/render")
+def cinematic_render(project_id: str, asset_id: str = Form("")):
+    with conn() as c:
+        project = c.execute("SELECT * FROM cinematic_projects WHERE id=?", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Cinematic project not found.")
+        shots = c.execute("SELECT * FROM cinematic_shots WHERE project_id=? ORDER BY position,created_at", (project_id,)).fetchall()
+    if not shots:
+        raise HTTPException(400, "Upload at least one source video first.")
+    if len(shots) > 30:
+        raise HTTPException(400, "A montage can contain up to 30 shots.")
+    total_duration = sum(float(s["end_seconds"]) - float(s["start_seconds"]) for s in shots)
+    if total_duration < 1 or total_duration > 90:
+        raise HTTPException(400, "The total montage must be between 1 and 90 seconds.")
+    for s in shots:
+        if not Path(s["file_path"]).is_file():
+            raise HTTPException(400, f"Missing source file: {s['filename']}")
+    output = EXPORTS / f"cinematic_{project_id}.mp4"
+    command = ["ffmpeg", "-y", "-filter_threads", "2", "-filter_complex_threads", "2"]
+    for s in shots:
+        command += ["-i", s["file_path"]]
+    filters = []
+    concat_inputs = []
+    for i, s in enumerate(shots):
+        dur = float(s["end_seconds"]) - float(s["start_seconds"])
+        filters.append(
+            f"[{i}:v]trim=start={float(s['start_seconds']):.3f}:duration={dur:.3f},"
+            "setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,setsar=1,fps=30,format=yuv420p"
+            f"[v{i}]"
+        )
+        concat_inputs.append(f"[v{i}]")
+    filters.append("".join(concat_inputs) + f"concat=n={len(shots)}:v=1:a=0[vout]")
+    if asset_id:
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
+            raise HTTPException(400, "Invalid campaign overlay.")
+        matches = [p for p in ASSETS.glob(f"{asset_id}.*") if p.suffix.lower() in {".png", ".jpg", ".webp"}]
+        if not matches or not matches[0].is_file():
+            raise HTTPException(404, "Campaign overlay not found.")
+        command += ["-loop", "1", "-i", str(matches[0])]
+        filters.append(
+            "[vout][%d:v]overlay=(W-w)/2:H*0.68:shortest=1,format=yuv420p[vfinal]"
+            % len(shots)
+        )
+        video_map = "[vfinal]"
+    else:
+        video_map = "[vout]"
+    command += ["-filter_complex", ";".join(filters), "-map", video_map,
+                "-t", f"{total_duration:.3f}", "-an", "-c:v", "libx264",
+                "-preset", "veryfast", "-crf", "20", "-threads", "2",
+                "-movflags", "+faststart", str(output)]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=1800)
+    except FileNotFoundError:
+        raise HTTPException(503, "FFmpeg is not installed.")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Cinematic render timed out. Try fewer or shorter shots.")
+    if result.returncode != 0:
+        raise HTTPException(500, "Cinematic render failed: " + result.stderr[-3500:])
+    return {"ok": True, "duration_seconds": round(total_duration, 2),
+            "shot_count": len(shots), "download": f"/api/exports/{output.name}"}
 
 
 app.mount(
