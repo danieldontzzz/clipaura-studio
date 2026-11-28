@@ -1023,7 +1023,8 @@ def render_clip(
     clip_id: str,
     start: float = Form(0),
     end: float = Form(18),
-    layout: str = Form("full_frame")
+    layout: str = Form("full_frame"),
+    asset_id: str = Form("")
 ):
     with conn() as c:
         clip = c.execute("""
@@ -1108,8 +1109,37 @@ def render_clip(
         "ffmpeg", "-y",
         "-ss", str(seek_time),
         "-i", input_path,
-        "-t", str(end - start),
-        "-vf", video_filter,
+    ]
+
+    if asset_id:
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
+            raise HTTPException(400, "Invalid overlay asset.")
+        asset_matches = [
+            p for p in ASSETS.glob(f"{asset_id}.*")
+            if p.suffix.lower() in {".png", ".jpg", ".webp"}
+        ]
+        if not asset_matches or not asset_matches[0].is_file():
+            raise HTTPException(404, "Overlay image not found in your Assets Library.")
+
+        overlay_path = asset_matches[0]
+        command.extend([
+            "-loop", "1", "-i", str(overlay_path),
+            "-t", str(end - start),
+            "-filter_complex",
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,setsar=1,fps=30[base];"
+            "[1:v]scale=iw*min(300/iw\\,180/ih):ih*min(300/iw\\,180/ih)"
+            "[logo];[base][logo]overlay=(W-w)/2:H*0.68:shortest=1,"
+            "format=yuv420p[v]",
+            "-map", "[v]", "-map", "0:a?",
+        ])
+    else:
+        command.extend([
+            "-t", str(end - start),
+            "-vf", video_filter,
+        ])
+
+    command.extend([
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "20",
@@ -1117,7 +1147,7 @@ def render_clip(
         "-b:a", "192k",
         "-movflags", "+faststart",
         str(output)
-    ]
+    ])
 
     try:
         result = subprocess.run(
@@ -1152,6 +1182,7 @@ def render_clip(
         "clip_id": clip_id,
         "source_start_seconds": seek_time,
         "duration_seconds": end - start,
+        "overlay_asset_id": asset_id or None,
         "download": f"/api/exports/{output.name}"
     }
 
