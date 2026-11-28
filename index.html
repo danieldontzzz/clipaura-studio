@@ -495,10 +495,22 @@ async function reject(id){
  catch(error){message(error.message)}
 }
 async function detectFacecam(id){
- const button=document.querySelector('[data-action=detect][data-id="'+id+'"]');
- if(button){button.disabled=true;button.textContent='SCANNING...'}
- try{const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'});if(r.detected){$('#facecamPositionSelect').value=r.position;message('Facecam: '+r.position+' ('+Math.round(r.confidence*100)+'% confidence).')}else{message(r.message||'No facecam found. Select a corner manually.')}}catch(e){message(e.message)}finally{if(button){button.disabled=false;button.textContent='DETECT FACECAM'}}
-}
+  const button=document.querySelector('[data-action=detect][data-id="'+id+'"]');
+  if(button){button.disabled=true;button.textContent='SCANNING...'}
+  try{
+   const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'});
+   if(r.detected)$('#facecamPositionSelect').value=r.position;
+   const d=r.diagnostics||{};
+   const summary='Facecam scan: '+(r.detected?(r.position+' · '+Math.round(r.confidence*100)+'% confidence'):'not detected')+
+    '\nFrames read: '+(d.frames_read??'?')+'/'+(d.frames_requested??'?')+
+    '\nFaces found: '+(d.face_detections??'?')+
+    '\nCorner votes: '+JSON.stringify(d.corner_votes||{});
+   const report=JSON.stringify({result:r.detected?'detected':'not_detected',position:r.position||null,confidence:r.confidence||0,diagnostics:d},null,2);
+   try{await navigator.clipboard.writeText(report);message(summary+'\nFull diagnostic report copied. Paste it into this chat.')}
+   catch(copyError){prompt('Copy this facecam diagnostic report and paste it into chat:',report);message(summary)}
+  }catch(e){message(e.message)}
+  finally{if(button){button.disabled=false;button.textContent='DETECT FACECAM'}}
+ }
 async function renderClip(id){
  const clip=clips.find(c=>c.id===id);
  if(!clip)return;
