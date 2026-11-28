@@ -6,6 +6,7 @@ import sqlite3
 import os
 import secrets
 import math
+import json
 import array
 import subprocess
 import sys
@@ -1414,7 +1415,8 @@ def render_clip(
     end: float = Form(18),
     layout: str = Form("full_frame"),
     asset_id: str = Form(""),
-    facecam_position: str = Form("auto")
+    facecam_position: str = Form("auto"),
+    webcam_region: str = Form("")
 ):
     with conn() as c:
         clip = c.execute("""
@@ -1490,14 +1492,28 @@ def render_clip(
 
     detected_webcam_region = None
     if layout == "facecam_stack":
-        if facecam_position == "auto":
-            detection = detect_facecam_region(input_path, seek_time, end - start)
-            if not detection.get("detected"):
-                raise HTTPException(422, detection.get("message", "Facecam not detected."))
-            facecam_position = detection["position"]
-            detected_webcam_region = detection.get("webcam_region")
-        if facecam_position not in {"top_left", "top_right", "bottom_left", "bottom_right"}:
-            raise HTTPException(400, "Choose a valid facecam corner.")
+        if webcam_region:
+            try:
+                selected_region = json.loads(webcam_region)
+                region_values = [float(selected_region[k]) for k in ("x", "y", "width", "height")]
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+                raise HTTPException(400, "Manual facecam selection is invalid.")
+            rx, ry, rw, rh = region_values
+            if (not all(math.isfinite(v) for v in region_values)
+                    or rx < 0 or ry < 0 or rw <= 0 or rh <= 0
+                    or rx + rw > 1.001 or ry + rh > 1.001
+                    or rw < 0.04 or rh < 0.04):
+                raise HTTPException(400, "Manual facecam rectangle is outside the video or too small.")
+            detected_webcam_region = {"x": rx, "y": ry, "width": rw, "height": rh}
+        else:
+            if facecam_position == "auto":
+                detection = detect_facecam_region(input_path, seek_time, end - start)
+                if not detection.get("detected"):
+                    raise HTTPException(422, detection.get("message", "Facecam not detected."))
+                facecam_position = detection["position"]
+                detected_webcam_region = detection.get("webcam_region")
+            if facecam_position not in {"top_left", "top_right", "bottom_left", "bottom_right"}:
+                raise HTTPException(400, "Choose a valid facecam corner.")
     output = EXPORTS / f"{clip_id}_clipaura.mp4"
 
     video_filter = (
