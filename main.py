@@ -1070,8 +1070,9 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
     """Detect a facecam corner and return a compact diagnostic report."""
     try:
         import cv2
+        import numpy as np
     except ImportError:
-        raise HTTPException(503, "Facecam detection is unavailable until OpenCV is installed.")
+        raise HTTPException(503, "Facecam detection is unavailable until OpenCV and NumPy are installed.")
     cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
     detector = cv2.CascadeClassifier(cascade_path)
     if detector.empty():
@@ -1103,7 +1104,9 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
             frame_reports.append(report)
             continue
 
-        frame = cv2.imdecode(bytearray(proc.stdout), cv2.IMREAD_GRAYSCALE)
+        # OpenCV imdecode expects a NumPy uint8 buffer, not a Python bytearray.
+        frame_buffer = np.frombuffer(proc.stdout, dtype=np.uint8)
+        frame = cv2.imdecode(frame_buffer, cv2.IMREAD_GRAYSCALE)
         if frame is None:
             report["read_error"] = "OpenCV could not decode the extracted frame"
             frame_reports.append(report)
