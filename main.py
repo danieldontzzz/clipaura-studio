@@ -75,6 +75,10 @@ async def owner_access_gate(request: Request, call_next):
     if path == "/api/health":
         return await call_next(request)
 
+    # Public image inspection links are time-limited and HMAC-verified by the route.
+    if path.startswith("/share/asset/"):
+        return await call_next(request)
+
     if path == "/login":
         return await call_next(request)
 
@@ -453,6 +457,48 @@ def list_assets():
                 "url": f"/api/assets/{path.stem}"
             })
     return items
+
+
+@app.post("/api/assets/{asset_id}/share")
+def create_asset_inspection_link(asset_id: str):
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
+        raise HTTPException(400, "Invalid asset ID.")
+    matches = [p for p in ASSETS.glob(f"{asset_id}.*") if p.suffix.lower() in {".png", ".jpg", ".webp"}]
+    if not matches or not matches[0].is_file():
+        raise HTTPException(404, "Asset not found.")
+    secret = os.environ.get("CLIPAURA_SESSION_SECRET", "")
+    if not secret:
+        raise HTTPException(503, "Secure sharing is not configured.")
+    expires = int(time.time()) + 10 * 60
+    payload = f"{asset_id}.{expires}"
+    signature = hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return {
+        "url": f"/share/asset/{asset_id}/{expires}.{signature}",
+        "expires_in_seconds": 600
+    }
+
+
+@app.get("/share/asset/{asset_id}/{proof}")
+def view_shared_asset(asset_id: str, proof: str):
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
+        raise HTTPException(404, "Shared asset not found.")
+    try:
+        expires_text, supplied_signature = proof.split(".", 1)
+        expires = int(expires_text)
+    except (ValueError, TypeError):
+        raise HTTPException(404, "Shared asset link is invalid.")
+    if expires < int(time.time()) or expires > int(time.time()) + 10 * 60 + 30:
+        raise HTTPException(410, "This inspection link has expired. Create a new one in ClipAura.")
+    secret = os.environ.get("CLIPAURA_SESSION_SECRET", "")
+    payload = f"{asset_id}.{expires}"
+    expected = hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    if not secret or not hmac.compare_digest(supplied_signature, expected):
+        raise HTTPException(403, "Shared asset link is invalid.")
+    matches = [p for p in ASSETS.glob(f"{asset_id}.*") if p.suffix.lower() in {".png", ".jpg", ".webp"}]
+    if not matches or not matches[0].is_file():
+        raise HTTPException(404, "Shared asset not found.")
+    media = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[matches[0].suffix.lower()]
+    return FileResponse(matches[0], media_type=media, filename=matches[0].name, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/assets/{asset_id}")
