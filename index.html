@@ -227,11 +227,12 @@ async function openGoogleDrivePicker(){
       .setOAuthToken(googleAccessToken)
       .setOrigin(window.location.protocol+'//'+window.location.host)
       .setTitle('Choose a video to import into ClipAura')
-      .addView(new google.picker.DocsView(google.picker.ViewId.DOCS).setMimeTypes('video/*'))
+      .addView(new google.picker.DocsView(google.picker.ViewId.DOCS))
       .setCallback(async data=>{
        if(data.action===google.picker.Action.PICKED){
         const picked=data.docs?.[0];
         if(!picked?.id){message('Google did not return a selected file.');return}
+        if(!String(picked.mimeType||'').startsWith('video/')){message('Please select a video file. The selected item is not a video.');return}
         button.disabled=true;button.textContent='IMPORTING VIDEO...';
         message('Importing '+(picked.name||'your video')+' from Google Drive. Keep this page open.');
         try{
