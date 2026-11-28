@@ -1362,10 +1362,10 @@ def detect_facecam(clip_id: str):
 @app.get("/api/clips/{clip_id}/facecam-preview")
 def facecam_preview(
     clip_id: str,
-    x: float,
-    y: float,
-    width: float,
-    height: float
+    x: float = None,
+    y: float = None,
+    width: float = None,
+    height: float = None
 ):
     """Return a representative frame with the estimated facecam crop outlined."""
     with conn() as c:
@@ -1385,10 +1385,13 @@ def facecam_preview(
     else:
         raise HTTPException(400, "Original video is missing")
 
-    if not all(math.isfinite(v) for v in (x, y, width, height)):
-        raise HTTPException(400, "Invalid preview rectangle")
-    if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > 1.001 or y + height > 1.001:
-        raise HTTPException(400, "Preview rectangle is outside the video")
+    rectangle_values = (x, y, width, height)
+    has_rectangle = any(value is not None for value in rectangle_values)
+    if has_rectangle:
+        if any(value is None or not math.isfinite(value) for value in rectangle_values):
+            raise HTTPException(400, "Invalid preview rectangle")
+        if width <= 0 or height <= 0 or x < 0 or y < 0 or x + width > 1.001 or y + height > 1.001:
+            raise HTTPException(400, "Preview rectangle is outside the video")
 
     try:
         proc = subprocess.run(
@@ -1409,11 +1412,12 @@ def facecam_preview(
         if frame is None:
             raise ValueError("Could not decode preview frame")
         h, w = frame.shape[:2]
-        x1, y1 = int(x * w), int(y * h)
-        x2, y2 = int((x + width) * w), int((y + height) * h)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 255, 80), max(3, w // 320))
-        cv2.putText(frame, "ESTIMATED FACECAM", (x1, max(28, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (80, 255, 80), 2, cv2.LINE_AA)
+        if has_rectangle:
+            x1, y1 = int(x * w), int(y * h)
+            x2, y2 = int((x + width) * w), int((y + height) * h)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 255, 80), max(3, w // 320))
+            cv2.putText(frame, "SELECTED FACECAM", (x1, max(28, y1 - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (80, 255, 80), 2, cv2.LINE_AA)
         ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
         if not ok:
             raise ValueError("Could not encode preview frame")
