@@ -11,6 +11,13 @@ import subprocess
 import sys
 import shutil
 
+import hashlib
+import hmac
+import time
+
+from fastapi import Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +41,123 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+
+# Private single-owner access gate. Configure both secrets in Railway before use.
+SESSION_COOKIE = "clipaura_session"
+SESSION_MAX_AGE = 7 * 24 * 60 * 60
+
+
+def valid_session(token: str, secret: str) -> bool:
+    try:
+        timestamp_text, supplied_signature = token.split(".", 1)
+        timestamp = int(timestamp_text)
+        if timestamp > int(time.time()) or int(time.time()) - timestamp > SESSION_MAX_AGE:
+            return False
+        expected = hmac.new(
+            secret.encode("utf-8"),
+            timestamp_text.encode("ascii"),
+            hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(supplied_signature, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+@app.middleware("http")
+async def owner_access_gate(request: Request, call_next):
+    path = request.url.path
+
+    if path == "/api/health":
+        return await call_next(request)
+
+    if path == "/login":
+        return await call_next(request)
+
+    if path == "/logout":
+        if request.method == "POST":
+            return await call_next(request)
+        return HTMLResponse("Method not allowed", status_code=405)
+
+    owner_password = os.environ.get("CLIPAURA_OWNER_PASSWORD", "")
+    session_secret = os.environ.get("CLIPAURA_SESSION_SECRET", "")
+
+    if not owner_password or not session_secret:
+        return HTMLResponse(
+            "ClipAura is locked. Configure CLIPAURA_OWNER_PASSWORD and "
+            "CLIPAURA_SESSION_SECRET in Railway Variables, then redeploy.",
+            status_code=503
+        )
+
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not valid_session(token, session_secret):
+        if path.startswith("/api/"):
+            return HTMLResponse("Authentication required", status_code=401)
+        return RedirectResponse("/login", status_code=303)
+
+    return await call_next(request)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    if not os.environ.get("CLIPAURA_OWNER_PASSWORD") or not os.environ.get("CLIPAURA_SESSION_SECRET"):
+        return HTMLResponse(
+            "Login is not configured yet. Set CLIPAURA_OWNER_PASSWORD and "
+            "CLIPAURA_SESSION_SECRET in Railway Variables.",
+            status_code=503
+        )
+    return HTMLResponse("""<!doctype html>
+<html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClipAura Studio — Sign in</title>
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d12;color:#f5f5f5;font:16px system-ui}
+form{width:min(88vw,360px);padding:28px;background:#171b24;border:1px solid #303746;border-radius:18px}
+h1{font-size:24px;margin:0 0 8px}p{color:#aab2c0}
+input,button{box-sizing:border-box;width:100%;padding:14px;border-radius:10px;font:inherit}
+input{background:#0d1119;border:1px solid #424b5c;color:white;margin:12px 0}
+button{border:0;background:#8b5cf6;color:white;font-weight:700}
+</style>
+<form method="post" action="/login"><h1>ClipAura Studio</h1>
+<p>Sign in to your private workspace.</p>
+<input type="password" name="password" placeholder="Owner password" required autocomplete="current-password">
+<button type="submit">Sign in</button></form></html>""")
+
+
+@app.post("/login")
+def login(password: str = Form(...)):
+    owner_password = os.environ.get("CLIPAURA_OWNER_PASSWORD", "")
+    session_secret = os.environ.get("CLIPAURA_SESSION_SECRET", "")
+    if not owner_password or not session_secret:
+        raise HTTPException(503, "Owner login is not configured")
+    if not secrets.compare_digest(password, owner_password):
+        raise HTTPException(401, "Incorrect password")
+    timestamp_text = str(int(time.time()))
+    signature = hmac.new(
+        session_secret.encode("utf-8"),
+        timestamp_text.encode("ascii"),
+        hashlib.sha256
+    ).hexdigest()
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        f"{timestamp_text}.{signature}",
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/"
+    )
+    return response
+
+
+@app.post("/logout")
+def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(
+        SESSION_COOKIE, path="/", secure=True,
+        httponly=True, samesite="strict"
+    )
+    return response
 
 
 def conn():
