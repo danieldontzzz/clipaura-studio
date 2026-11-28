@@ -232,15 +232,25 @@ def health():
 
 @app.get("/api/google/config")
 def google_picker_config():
-    # Safe diagnostics: report presence only; never return secret/config values.
+    # Safe diagnostics only: never return secret/config values.
     required = {
         "GOOGLE_CLIENT_ID": os.environ.get("GOOGLE_CLIENT_ID", "").strip(),
         "GOOGLE_API_KEY": os.environ.get("GOOGLE_API_KEY", "").strip(),
         "GOOGLE_PROJECT_NUMBER": os.environ.get("GOOGLE_PROJECT_NUMBER", "").strip(),
     }
+    google_env_names = sorted(
+        name for name in os.environ
+        if "GOOGLE" in name.upper() or ("API" in name.upper() and "KEY" in name.upper())
+    )
+    api_key = required["GOOGLE_API_KEY"]
     return {
         "configured": all(required.values()),
         "variables": {name: bool(value) for name, value in required.items()},
+        "diagnostics": {
+            "google_related_environment_variable_names": google_env_names,
+            "google_api_key_length": len(api_key),
+            "google_api_key_has_expected_prefix": api_key.startswith("AIza"),
+        },
     }
 
 
