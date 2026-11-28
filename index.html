@@ -462,10 +462,13 @@ async function loadClips(){
      <button class="secondary" data-action="detect" data-id="${esc(clip.id)}">DETECT FACECAM</button><button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button>
     </div>
     <div class="facecam-preview hidden" id="facecamPreview-${esc(clip.id)}" style="margin-top:12px;padding:12px;border:1px solid #7136a5;border-radius:12px;background:#0b0712">
-     <b style="display:block;margin-bottom:8px">FACECAM AREA CHECK</b>
-     <p class="muted preview-status" style="margin:0 0 9px">Loading the video frame and estimated crop...</p>
-     <img alt="Video frame with estimated facecam crop outlined" style="display:block;width:100%;height:auto;border-radius:8px;background:#090611">
-     <p class="muted" style="margin:9px 0 0">Green rectangle = estimated webcam crop. If it surrounds gameplay instead of the streamer, choose another corner above. Do not render until this looks correct.</p>
+     <b style="display:block;margin-bottom:8px">SELECT FACECAM AREA</b>
+     <p class="muted preview-status" style="margin:0 0 9px">Green box is the automatic suggestion. Touch and drag over the video to draw your own rectangle around the webcam.</p>
+     <div class="facecam-select-stage" data-clip-id="${esc(clip.id)}" style="position:relative;width:100%;line-height:0;touch-action:none;user-select:none;overflow:hidden;border-radius:8px;background:#090611">
+      <img alt="Video frame. Touch and drag to select the streamer facecam." draggable="false" style="display:block;width:100%;height:auto;pointer-events:none">
+      <div class="facecam-drag-box" style="display:none;position:absolute;border:3px solid #48f078;background:rgba(72,240,120,.10);box-sizing:border-box;pointer-events:none"></div>
+     </div>
+     <p class="muted" style="margin:9px 0 0">Drag a rectangle around the whole webcam, not just the face. Your manual selection will be used for the vertical render.</p>
     </div>`:''}
   </div>`;
  }).join('')||'No clips for this VOD yet. Select another VOD or analyse this one.';
@@ -533,46 +536,65 @@ async function reject(id){
  try{await api(`/api/clips/${id}/reject`,{method:'POST'});await loadClips();message('Candidate rejected.')}
  catch(error){message(error.message)}
 }
+const facecamSelections = {};
+const facecamDragState = {};
+function previewUrl(id,region){
+ const params=new URLSearchParams({x:region.x,y:region.y,width:region.width,height:region.height});
+ return '/api/clips/'+encodeURIComponent(id)+'/facecam-preview?'+params.toString()+'&v='+Date.now();
+}
+function setFacecamSelection(id,region){
+ facecamSelections[id]=region;
+ const preview=document.getElementById('facecamPreview-'+id);
+ if(!preview)return;
+ const img=preview.querySelector('img'),status=preview.querySelector('.preview-status');
+ if(img)img.src=previewUrl(id,region);
+ if(status)status.textContent='Your rectangle is selected. Drag again to adjust it. This exact area will be used for rendering.';
+}
+function attachFacecamSelection(preview,id){
+ const stage=preview.querySelector('.facecam-select-stage'),box=preview.querySelector('.facecam-drag-box');
+ if(!stage||stage.dataset.ready==='1')return;
+ stage.dataset.ready='1';
+ const point=e=>{const r=stage.getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))}};
+ stage.addEventListener('pointerdown',e=>{
+  if(e.pointerType==='mouse'&&e.button!==0)return;
+  const p=point(e);facecamDragState[id]={start:p};stage.setPointerCapture(e.pointerId);box.style.display='block';
+  Object.assign(box.style,{left:(p.x*100)+'%',top:(p.y*100)+'%',width:'0',height:'0'});
+ });
+ stage.addEventListener('pointermove',e=>{
+  const s=facecamDragState[id];if(!s)return;
+  const p=point(e),x=Math.min(s.start.x,p.x),y=Math.min(s.start.y,p.y);
+  Object.assign(box.style,{left:(x*100)+'%',top:(y*100)+'%',width:(Math.abs(p.x-s.start.x)*100)+'%',height:(Math.abs(p.y-s.start.y)*100)+'%'});
+ });
+ const finish=e=>{
+  const s=facecamDragState[id];if(!s)return;delete facecamDragState[id];
+  const p=point(e),x=Math.min(s.start.x,p.x),y=Math.min(s.start.y,p.y),w=Math.abs(p.x-s.start.x),h=Math.abs(p.y-s.start.y);
+  if(w<0.04||h<0.04){box.style.display='none';preview.querySelector('.preview-status').textContent='Selection too small. Drag a larger rectangle around the whole webcam.';return}
+  Object.assign(box.style,{left:(x*100)+'%',top:(y*100)+'%',width:(w*100)+'%',height:(h*100)+'%',display:'block'});
+  setFacecamSelection(id,{x:+x.toFixed(5),y:+y.toFixed(5),width:+w.toFixed(5),height:+h.toFixed(5)});
+ };
+ stage.addEventListener('pointerup',finish);stage.addEventListener('pointercancel',finish);
+}
 async function detectFacecam(id){
-  const button=document.querySelector('[data-action=detect][data-id="'+id+'"]');
-  if(button){button.disabled=true;button.textContent='SCANNING...'}
-  try{
-   const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'});
-   const d=r.diagnostics||{};
-   const summary='Facecam scan: '+(r.detected?(r.position+' · '+Math.round(r.confidence*100)+'% confidence'):'not detected')+
-    ' · '+(d.frames_with_face??0)+' of '+(d.frames_read??0)+' frames contained faces';
-   const report=JSON.stringify({result:r.detected?'detected':'not_detected',position:r.position||null,confidence:r.confidence||0,diagnostics:d},null,2);
-   if(r.detected&&r.webcam_region){
-    $('#facecamPositionSelect').value=r.position;
-    const preview=document.getElementById('facecamPreview-'+id);
-    if(preview){
-     const status=preview.querySelector('.preview-status');
-     const img=preview.querySelector('img');
-     preview.classList.remove('hidden');
-     status.textContent=summary+' · Drawing the estimated crop...';
-     img.onload=()=>{
-      status.textContent=summary+' · Preview ready. Check the green rectangle before rendering.';
-      preview.scrollIntoView({behavior:'smooth',block:'center'});
-     };
-     img.onerror=()=>{
-      status.textContent='The detector worked, but the preview frame could not load. Please do not render yet.';
-      preview.scrollIntoView({behavior:'smooth',block:'center'});
-     };
-     const params=new URLSearchParams({x:r.webcam_region.x,y:r.webcam_region.y,width:r.webcam_region.width,height:r.webcam_region.height});
-     img.src='/api/clips/'+encodeURIComponent(id)+'/facecam-preview?'+params.toString()+'&v='+Date.now();
-    }else{
-     message(summary+' · Preview panel was not found. Refresh the page after deployment.');
-    }
-   }else{
-    message(summary+' · No reliable facecam crop found. Try a segment where the webcam stays visible.');
-   }
-   if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>{});
-  }catch(e){
-   message('Facecam detection or preview failed: '+e.message);
-  }finally{
-   if(button){button.disabled=false;button.textContent='DETECT FACECAM'}
-  }
- }
+ const button=document.querySelector('[data-action=detect][data-id="'+id+'"]');
+ if(button){button.disabled=true;button.textContent='SCANNING...'}
+ try{
+  const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'}),d=r.diagnostics||{};
+  const summary='Facecam scan: '+(r.detected?(r.position+' · '+Math.round(r.confidence*100)+'% confidence'):'not detected')+' · '+(d.frames_with_face??0)+' of '+(d.frames_read??0)+' frames contained faces';
+  if(r.detected&&r.webcam_region){
+   $('#facecamPositionSelect').value=r.position;
+   const preview=document.getElementById('facecamPreview-'+id);
+   if(preview){
+    const status=preview.querySelector('.preview-status'),img=preview.querySelector('img');
+    preview.classList.remove('hidden');attachFacecamSelection(preview,id);
+    status.textContent=summary+' · Loading frame. Drag to adjust the green rectangle.';
+    img.onload=()=>{status.textContent=summary+' · Automatic suggestion shown. Touch and drag to select the exact webcam area.';preview.scrollIntoView({behavior:'smooth',block:'center'})};
+    img.onerror=()=>{status.textContent='Preview frame failed to load. Please do not render yet.'};
+    setFacecamSelection(id,r.webcam_region);
+   }else message(summary+' · Preview panel not found. Refresh after deployment.');
+  }else message(summary+' · No reliable automatic crop found. Try a section where the webcam stays visible.');
+ }catch(e){message('Facecam detection or preview failed: '+e.message)}
+ finally{if(button){button.disabled=false;button.textContent='DETECT FACECAM'}}
+}
 async function renderClip(id){
  const clip=clips.find(c=>c.id===id);
  if(!clip)return;
@@ -584,6 +606,7 @@ async function renderClip(id){
  const layout=$('#renderLayoutSelect')?.value||'facecam_stack';
  const facecamPosition=$('#facecamPositionSelect')?.value||'auto';
  data.append('layout',layout);data.append('facecam_position',facecamPosition);
+ if(layout==='facecam_stack'&&facecamSelections[id])data.append('webcam_region',JSON.stringify(facecamSelections[id]));
  if(overlay)data.append('asset_id',overlay);
  message('Extracting this moment from the original VOD and rendering vertical MP4...');
  try{
