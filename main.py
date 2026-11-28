@@ -30,8 +30,9 @@ BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
 UPLOADS = DATA / "uploads"
 EXPORTS = DATA / "exports"
+ASSETS = DATA / "assets"
 
-for folder in (DATA, UPLOADS, EXPORTS):
+for folder in (DATA, UPLOADS, EXPORTS, ASSETS):
     folder.mkdir(parents=True, exist_ok=True)
 
 DB = DATA / "clipaura.sqlite3"
@@ -355,6 +356,115 @@ async def import_google_drive_video(
         "bytes": total,
         "status": "vod_downloaded"
     }
+
+
+@app.post("/api/drive/import-image")
+async def import_google_drive_image(
+    payload: dict = Body(...),
+    authorization: str = Header(default="", alias="Authorization")
+):
+    access_token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    file_id = str(payload.get("file_id", "")).strip()
+
+    if not access_token:
+        raise HTTPException(401, "Google authorization is missing. Connect Google Drive and try again.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
+        raise HTTPException(400, "The selected Google Drive file ID is invalid.")
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    metadata_url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+    timeout = httpx.Timeout(90.0, connect=25.0)
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        metadata_response = await client.get(
+            metadata_url,
+            params={"fields": "id,name,mimeType,size"},
+            headers=headers
+        )
+        if metadata_response.status_code == 401:
+            raise HTTPException(401, "Google authorization expired. Choose the image again.")
+        if metadata_response.status_code == 403:
+            raise HTTPException(403, "Google Drive did not grant access to this image. Re-select it in the Google Picker.")
+        if metadata_response.status_code != 200:
+            raise HTTPException(502, "Google Drive could not provide the selected image details.")
+
+        metadata = metadata_response.json()
+        mime_type = str(metadata.get("mimeType", "")).lower()
+        allowed = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp"
+        }
+        if mime_type not in allowed:
+            raise HTTPException(400, "Choose a PNG, JPG or WEBP image.")
+        original_name = str(metadata.get("name") or "drive-image")
+        declared_size = int(metadata.get("size") or 0)
+        max_bytes = 20 * 1024 * 1024
+        if declared_size > max_bytes:
+            raise HTTPException(413, "Images must be 20 MB or smaller.")
+
+        asset_id = str(uuid4())
+        suffix = allowed[mime_type]
+        destination = ASSETS / f"{asset_id}{suffix}"
+        temporary = destination.with_suffix(destination.suffix + ".part")
+        total = 0
+
+        try:
+            async with client.stream(
+                "GET", metadata_url, params={"alt": "media"}, headers=headers
+            ) as media_response:
+                if media_response.status_code == 401:
+                    raise HTTPException(401, "Google authorization expired. Choose the image again.")
+                if media_response.status_code != 200:
+                    raise HTTPException(502, "Google Drive could not download the selected image.")
+                with open(temporary, "wb") as output:
+                    async for chunk in media_response.aiter_bytes(chunk_size=256 * 1024):
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise HTTPException(413, "This image exceeds ClipAura's 20 MB limit.")
+                        output.write(chunk)
+
+            if total == 0:
+                raise HTTPException(400, "Google Drive returned an empty image.")
+            temporary.replace(destination)
+            os.chmod(destination, 0o600)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
+
+    return {
+        "ok": True,
+        "asset_id": asset_id,
+        "filename": original_name,
+        "bytes": total,
+        "url": f"/api/assets/{asset_id}"
+    }
+
+
+@app.get("/api/assets")
+def list_assets():
+    items = []
+    for path in sorted(ASSETS.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".webp"}:
+            items.append({
+                "asset_id": path.stem,
+                "filename": path.name,
+                "url": f"/api/assets/{path.stem}"
+            })
+    return items
+
+
+@app.get("/api/assets/{asset_id}")
+def get_asset(asset_id: str):
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
+        raise HTTPException(400, "Invalid asset ID.")
+    matches = [p for p in ASSETS.glob(f"{asset_id}.*") if p.suffix.lower() in {".png", ".jpg", ".webp"}]
+    if not matches or not matches[0].is_file():
+        raise HTTPException(404, "Asset not found.")
+    media = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[matches[0].suffix.lower()]
+    return FileResponse(matches[0], media_type=media, filename=matches[0].name)
+
 
 
 @app.post("/api/settings/youtube-cookies")
