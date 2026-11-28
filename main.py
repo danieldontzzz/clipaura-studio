@@ -1183,21 +1183,29 @@ def facecam_stack_filter(position: str):
 
 @app.post("/api/clips/{clip_id}/detect-facecam")
 def detect_facecam(clip_id: str):
-    with conn() as c:
-        clip = c.execute("""SELECT clips.*, jobs.vod_path FROM clips JOIN jobs ON jobs.id=clips.job_id WHERE clips.id=?""", (clip_id,)).fetchone()
-    if not clip:
-        raise HTTPException(404, "Clip not found")
-    if clip["file_path"] and Path(clip["file_path"]).is_file():
-        path, seek = clip["file_path"], 0.0
-        duration = float(clip["duration"] or 18)
-    elif clip["vod_path"] and Path(clip["vod_path"]).is_file():
-        path = clip["vod_path"]
-        seek = float(clip["start_seconds"] or 0)
-        duration = float(clip["duration"] or 18)
-    else:
-        raise HTTPException(400, "Original video is missing")
-    result = detect_facecam_region(path, seek, duration)
-    return result
+    try:
+        with conn() as c:
+            clip = c.execute("""SELECT clips.*, jobs.vod_path FROM clips JOIN jobs ON jobs.id=clips.job_id WHERE clips.id=?""", (clip_id,)).fetchone()
+        if not clip:
+            raise HTTPException(404, "Clip not found")
+        if clip["file_path"] and Path(clip["file_path"]).is_file():
+            path, seek = clip["file_path"], 0.0
+            duration = float(clip["duration"] or 18)
+        elif clip["vod_path"] and Path(clip["vod_path"]).is_file():
+            path = clip["vod_path"]
+            seek = float(clip["start_seconds"] or 0)
+            duration = float(clip["duration"] or 18)
+        else:
+            raise HTTPException(400, "Original video is missing")
+        return detect_facecam_region(path, seek, duration)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Keep the traceback in Railway logs while returning the useful exception to the UI.
+        import logging
+        logging.exception("Facecam detection crashed for clip_id=%s", clip_id)
+        detail = f"Facecam detection crashed: {type(exc).__name__}: {str(exc)[:300]}"
+        raise HTTPException(500, detail)
 
 
 @app.post("/api/clips/{clip_id}/render")
