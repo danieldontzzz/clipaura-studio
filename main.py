@@ -1157,12 +1157,16 @@ def render_clip(
     if asset_id:
         command = [
             "ffmpeg", "-y",
+            "-filter_threads", "2",
+            "-filter_complex_threads", "2",
             "-ss", str(seek_time),
             "-i", input_path,
         ]
     else:
         command = [
             "ffmpeg", "-y",
+            "-filter_threads", "2",
+            "-filter_complex_threads", "2",
             "-i", input_path,
             "-ss", str(seek_time),
         ]
@@ -1199,6 +1203,7 @@ def render_clip(
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "20",
+        "-threads", "2",
         "-c:a", "aac",
         "-b:a", "192k",
         "-movflags", "+faststart",
@@ -1222,7 +1227,7 @@ def render_clip(
     if result.returncode != 0:
         raise HTTPException(
             500,
-            "FFmpeg render failed (last diagnostic output): " + result.stderr[-5000:]
+            f"FFmpeg render failed (exit={result.returncode}, source={source_type}, seek={seek_time:.3f}s, duration={end-start:.3f}s, threads=2): " + result.stderr[-5000:]
         )
 
     with conn() as c:
