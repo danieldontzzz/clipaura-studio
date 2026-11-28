@@ -1774,11 +1774,45 @@ def cinematic_delete_shot(shot_id: str):
         if not shot:
             raise HTTPException(404, "Shot not found.")
         c.execute("DELETE FROM cinematic_shots WHERE id=?", (shot_id,))
-    try:
-        Path(shot["file_path"]).unlink(missing_ok=True)
-    except OSError:
-        pass
+        remaining = c.execute(
+            "SELECT COUNT(*) AS n FROM cinematic_shots WHERE file_path=?",
+            (shot["file_path"],)
+        ).fetchone()["n"]
+    # A source file may be referenced by multiple timeline segments.
+    # Only remove it after the final segment using it has been deleted.
+    if remaining == 0:
+        try:
+            Path(shot["file_path"]).unlink(missing_ok=True)
+        except OSError:
+            pass
     return {"ok": True}
+
+
+@app.post("/api/cinematic/shots/{shot_id}/duplicate")
+def cinematic_duplicate_shot(shot_id: str):
+    with conn() as c:
+        shot = c.execute("SELECT * FROM cinematic_shots WHERE id=?", (shot_id,)).fetchone()
+        if not shot:
+            raise HTTPException(404, "Shot not found.")
+        count = c.execute(
+            "SELECT COUNT(*) AS n FROM cinematic_shots WHERE project_id=?",
+            (shot["project_id"],)
+        ).fetchone()["n"]
+        if count >= 30:
+            raise HTTPException(400, "A montage can contain up to 30 shots.")
+        new_id = str(uuid4())
+        c.execute(
+            """INSERT INTO cinematic_shots
+            (id,project_id,filename,file_path,duration,start_seconds,end_seconds,position)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (new_id, shot["project_id"], shot["filename"], shot["file_path"],
+             shot["duration"], shot["start_seconds"], shot["end_seconds"], int(count))
+        )
+    return {
+        "ok": True, "id": new_id, "filename": shot["filename"],
+        "duration": shot["duration"], "start_seconds": shot["start_seconds"],
+        "end_seconds": shot["end_seconds"], "position": int(count)
+    }
 
 
 @app.post("/api/cinematic/projects/{project_id}/render")
