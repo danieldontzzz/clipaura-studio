@@ -513,6 +513,66 @@ def get_asset(asset_id: str):
 
 
 
+
+@app.get("/api/storage")
+def storage_inventory():
+    items=[]; known=set()
+    def add_item(kind,item_id,path,label,detail=""):
+        try:
+            resolved=Path(path).resolve()
+            if not resolved.is_file(): return
+            stat=resolved.stat()
+            items.append({"kind":kind,"id":str(item_id),"filename":resolved.name,"label":label,"detail":detail,"bytes":stat.st_size,"modified":stat.st_mtime})
+            known.add(str(resolved))
+        except (OSError,RuntimeError): return
+    with conn() as c:
+        for row in c.execute("SELECT id,creator,vod_path FROM jobs").fetchall():
+            if row["vod_path"]: add_item("vod",row["id"],row["vod_path"],Path(row["vod_path"]).name,row["creator"] or "VOD")
+        for row in c.execute("SELECT clips.id,clips.title,clips.file_path,clips.export_path,jobs.creator FROM clips LEFT JOIN jobs ON jobs.id=clips.job_id").fetchall():
+            if row["file_path"]: add_item("clip_upload",row["id"],row["file_path"],row["title"] or "Uploaded clip",row["creator"] or "")
+            if row["export_path"]: add_item("export",row["id"],row["export_path"],row["title"] or "Rendered export",row["creator"] or "")
+    for folder,kind,extensions in ((ASSETS,"asset",{".png",".jpg",".webp"}),(UPLOADS,"orphan_upload",{".mp4",".mkv",".webm",".mov"}),(EXPORTS,"orphan_export",{".mp4",".mkv",".webm",".mov"})):
+        for path in folder.iterdir():
+            if path.is_file() and path.suffix.lower() in extensions and str(path.resolve()) not in known: add_item(kind,path.name,path,path.name,"Unlinked file")
+    items.sort(key=lambda x:x["modified"],reverse=True)
+    return {"items":items,"total_bytes":sum(x["bytes"] for x in items),"file_count":len(items)}
+
+
+@app.delete("/api/storage/{kind}/{item_id}")
+def delete_storage_item(kind: str,item_id: str):
+    folders={"vod":UPLOADS,"clip_upload":UPLOADS,"export":EXPORTS,"asset":ASSETS,"orphan_upload":UPLOADS,"orphan_export":EXPORTS}
+    if kind not in folders: raise HTTPException(400,"Unsupported storage item type.")
+    path=None
+    with conn() as c:
+        if kind=="vod":
+            row=c.execute("SELECT vod_path FROM jobs WHERE id=?",(item_id,)).fetchone()
+            if row and row["vod_path"]: path=Path(row["vod_path"])
+        elif kind=="clip_upload":
+            row=c.execute("SELECT file_path FROM clips WHERE id=?",(item_id,)).fetchone()
+            if row and row["file_path"]: path=Path(row["file_path"])
+        elif kind=="export":
+            row=c.execute("SELECT export_path FROM clips WHERE id=?",(item_id,)).fetchone()
+            if row and row["export_path"]: path=Path(row["export_path"])
+        elif kind=="asset":
+            if not re.fullmatch(r"[0-9a-fA-F-]{36}",item_id): raise HTTPException(400,"Invalid asset ID.")
+            matches=[p for p in ASSETS.glob(f"{item_id}.*") if p.suffix.lower() in {".png",".jpg",".webp"}]
+            path=matches[0] if matches else None
+        else:
+            if Path(item_id).name!=item_id or item_id in {"",".",".."}: raise HTTPException(400,"Invalid filename.")
+            candidate=folders[kind]/item_id
+            if candidate.suffix.lower() in {".mp4",".mkv",".webm",".mov"}: path=candidate
+        if path is None: raise HTTPException(404,"Storage item not found.")
+        try:
+            resolved=path.resolve(strict=True); resolved.relative_to(folders[kind].resolve())
+        except (OSError,ValueError,RuntimeError): raise HTTPException(400,"File is outside the managed storage area.")
+        if not resolved.is_file(): raise HTTPException(404,"Storage file not found.")
+        resolved.unlink()
+        if kind=="vod": c.execute("UPDATE jobs SET vod_path='' WHERE id=?",(item_id,))
+        elif kind=="clip_upload": c.execute("UPDATE clips SET file_path='' WHERE id=?",(item_id,))
+        elif kind=="export": c.execute("UPDATE clips SET export_path='',status=CASE WHEN status='rendered' THEN 'approved' ELSE status END WHERE id=?",(item_id,))
+    return {"ok":True,"deleted":path.name}
+
+
 @app.post("/api/settings/youtube-cookies")
 async def upload_youtube_cookies(
     cookies: UploadFile = File(...),
