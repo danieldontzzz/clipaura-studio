@@ -802,12 +802,8 @@ def analyse_vod(job_id: str):
         raise HTTPException(404, "Job not found")
 
     vod_path = job["vod_path"] or ""
-
     if not vod_path or not Path(vod_path).is_file():
-        raise HTTPException(
-            400,
-            "Download the VOD before analysing it"
-        )
+        raise HTTPException(400, "Download the VOD before analysing it")
 
     probe = subprocess.run(
         [
@@ -816,113 +812,145 @@ def analyse_vod(job_id: str):
             "-of", "default=noprint_wrappers=1:nokey=1",
             vod_path
         ],
-        capture_output=True,
-        text=True,
-        timeout=60
+        capture_output=True, text=True, timeout=60
     )
-
     try:
         vod_duration = float(probe.stdout.strip())
     except Exception:
         raise HTTPException(500, "Could not read VOD duration")
-
     if probe.returncode != 0 or vod_duration <= 0:
         raise HTTPException(500, "Invalid VOD duration")
 
-    command = [
+    # Audio signal: five-second RMS loudness and transient peak measurements.
+    audio_command = [
         "ffmpeg", "-v", "error", "-i", vod_path,
         "-vn", "-ac", "1", "-ar", "8000",
         "-f", "s16le", "pipe:1"
     ]
-
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL
+    audio_process = subprocess.Popen(
+        audio_command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
     )
-
     window_seconds = 5
     window_bytes = 8000 * window_seconds * 2
     measurements = []
-
     try:
         index = 0
-
         while True:
-            raw = process.stdout.read(window_bytes)
-
+            raw = audio_process.stdout.read(window_bytes)
             if not raw:
                 break
-
             raw = raw[:len(raw) - (len(raw) % 2)]
-
             samples = array.array("h")
             samples.frombytes(raw)
-
             if not samples:
                 break
-
             square_sum = sum(v * v for v in samples)
             rms = math.sqrt(square_sum / len(samples))
             peak = max(abs(v) for v in samples)
-
-            db = 20 * math.log10(max(rms, 1) / 32768)
-            peak_db = 20 * math.log10(max(peak, 1) / 32768)
-
             measurements.append({
                 "time": index * window_seconds,
-                "db": db,
-                "peak_db": peak_db
+                "db": 20 * math.log10(max(rms, 1) / 32768),
+                "peak_db": 20 * math.log10(max(peak, 1) / 32768)
             })
-
             index += 1
-
-        return_code = process.wait(timeout=3600)
-
-        if return_code != 0:
+        if audio_process.wait(timeout=3600) != 0:
             raise HTTPException(500, "Audio analysis failed")
-
     except Exception as exc:
-        process.kill()
-
+        audio_process.kill()
         if isinstance(exc, HTTPException):
             raise
-
-        raise HTTPException(
-            500,
-            "Audio analysis could not finish"
-        )
+        raise HTTPException(500, "Audio analysis could not finish")
 
     if len(measurements) < 2:
         raise HTTPException(400, "Not enough audio to analyse")
 
-    levels = [m["db"] for m in measurements]
-    peaks = [m["peak_db"] for m in measurements]
+    # Visual signal: sample a small grayscale frame twice per second.
+    # Frame-to-frame pixel change is a lightweight proxy for motion/cut activity,
+    # not facial-expression or semantic understanding.
+    visual_changes = [0.0] * len(measurements)
+    visual_available = False
+    frame_width, frame_height = 160, 90
+    frame_size = frame_width * frame_height
+    visual_command = [
+        "ffmpeg", "-v", "error", "-i", vod_path,
+        "-an", "-vf",
+        "fps=1/2,scale=160:90:flags=area,format=gray",
+        "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"
+    ]
+    visual_process = None
+    try:
+        visual_process = subprocess.Popen(
+            visual_command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        previous = None
+        frame_index = 0
+        bucket_totals = [0.0] * len(measurements)
+        bucket_counts = [0] * len(measurements)
+        while True:
+            chunks = bytearray()
+            while len(chunks) < frame_size:
+                part = visual_process.stdout.read(frame_size - len(chunks))
+                if not part:
+                    break
+                chunks.extend(part)
+            if len(chunks) != frame_size:
+                break
+            current = array.array("B", chunks)
+            if previous is not None:
+                changed = sum(abs(a - b) for a, b in zip(current, previous)) / frame_size
+                sample_time = frame_index * 2
+                bucket = min(len(measurements) - 1, int(sample_time // window_seconds))
+                bucket_totals[bucket] += changed
+                bucket_counts[bucket] += 1
+            previous = current
+            frame_index += 1
+        visual_code = visual_process.wait(timeout=3600)
+        if visual_code == 0 and frame_index >= 3:
+            visual_available = True
+            visual_changes = [
+                bucket_totals[i] / bucket_counts[i] if bucket_counts[i] else 0.0
+                for i in range(len(measurements))
+            ]
+    except Exception:
+        if visual_process is not None:
+            try:
+                visual_process.kill()
+            except Exception:
+                pass
+        # Keep the audio-only fallback available if a video decoder cannot
+        # produce the low-resolution visual samples.
+        visual_available = False
 
     def normalise(value, low, high):
         if high <= low:
-            return 0
+            return 0.0
+        return max(0.0, min(100.0, (value - low) / (high - low) * 100.0))
 
-        return max(
-            0,
-            min(100, (value - low) / (high - low) * 100)
-        )
+    levels = [m["db"] for m in measurements]
+    peaks = [m["peak_db"] for m in measurements]
+    motion_low = min(visual_changes) if visual_available else 0.0
+    motion_high = max(visual_changes) if visual_available else 0.0
 
     ranked = []
-
-    for item in measurements:
-        energy = normalise(item["db"], min(levels), max(levels))
-        peak = normalise(item["peak_db"], min(peaks), max(peaks))
-
-        score = round(energy * 0.65 + peak * 0.35)
-
+    for i, item in enumerate(measurements):
+        energy_score = normalise(item["db"], min(levels), max(levels))
+        peak_score = normalise(item["peak_db"], min(peaks), max(peaks))
+        motion_score = normalise(visual_changes[i], motion_low, motion_high) if visual_available else 0.0
+        audio_score = energy_score * 0.65 + peak_score * 0.35
+        if visual_available:
+            combined_score = round(audio_score * 0.70 + motion_score * 0.30)
+        else:
+            combined_score = round(audio_score)
         ranked.append({
             "time": item["time"],
-            "score": score
+            "score": combined_score,
+            "audio_score": round(audio_score),
+            "motion_score": round(motion_score),
+            "energy_score": round(energy_score),
+            "peak_score": round(peak_score)
         })
 
     ranked.sort(key=lambda item: item["score"], reverse=True)
-
     selected = []
     min_gap = 25
     clip_length = 18
@@ -930,94 +958,83 @@ def analyse_vod(job_id: str):
     for item in ranked:
         if item["score"] < 25:
             continue
-
         event_time = item["time"] + 2.5
-
-        start = max(
-            0,
-            min(event_time - 6, vod_duration - clip_length)
-        )
-
-        end = min(vod_duration, start + clip_length)
-
-        if end - start < 5:
+        start_seconds = max(0, min(event_time - 6, vod_duration - clip_length))
+        end_seconds = min(vod_duration, start_seconds + clip_length)
+        if end_seconds - start_seconds < 5:
+            continue
+        if any(abs(start_seconds - old["start"]) < min_gap for old in selected):
             continue
 
-        if any(
-            abs(start - old["start"]) < min_gap
-            for old in selected
-        ):
-            continue
-
+        signals = []
+        if item["audio_score"] >= 45:
+            signals.append("audio reaction")
+        if visual_available and item["motion_score"] >= 45:
+            signals.append("visual movement")
+        if item["peak_score"] >= 60:
+            signals.append("sharp audio peak")
+        if not signals:
+            signals.append("combined activity")
         selected.append({
             "time": event_time,
-            "start": round(start, 2),
-            "duration": round(end - start, 2),
-            "score": item["score"]
+            "start": round(start_seconds, 2),
+            "duration": round(end_seconds - start_seconds, 2),
+            "score": item["score"],
+            "reason": " + ".join(signals),
+            "audio_score": item["audio_score"],
+            "motion_score": item["motion_score"] if visual_available else None
         })
-
         if len(selected) >= 20:
             break
 
     if not selected:
-        raise HTTPException(400, "No strong audio moments found")
+        raise HTTPException(400, "No strong candidate moments found")
 
     selected.sort(key=lambda item: item["start"])
-
     created = []
-
     with conn() as c:
-        c.execute("""
-            DELETE FROM clips
-            WHERE job_id=? AND status='pending_review'
-        """, (job_id,))
-
+        c.execute(
+            "DELETE FROM clips WHERE job_id=? AND status='pending_review'",
+            (job_id,)
+        )
         for number, item in enumerate(selected, start=1):
             clip_id = str(uuid4())
             start_seconds = item["start"]
-
             whole = int(start_seconds)
-
             timestamp = (
                 f"{whole // 3600}h"
                 f"{(whole % 3600) // 60}m"
                 f"{whole % 60}s"
             )
-
             original_url = job["vod_url"]
             separator = "&" if "?" in original_url else "?"
-
             source_url = f"{original_url}{separator}t={timestamp}"
-            title = f"Moment {number} — {timestamp}"
-
+            title = f"Moment {number} — {item['reason']} — {timestamp}"
             c.execute("""
                 INSERT INTO clips(
                     id, job_id, title, source_url, score,
                     duration, status, start_seconds
-                )
-                VALUES(?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?)
             """, (
-                clip_id,
-                job_id,
-                title,
-                source_url,
-                item["score"],
-                item["duration"],
-                "pending_review",
-                start_seconds
+                clip_id, job_id, title, source_url, item["score"],
+                item["duration"], "pending_review", start_seconds
             ))
-
             created.append({
                 "id": clip_id,
                 "title": title,
                 "score": item["score"],
                 "start_seconds": start_seconds,
-                "duration": item["duration"]
+                "duration": item["duration"],
+                "reason": item["reason"],
+                "audio_score": item["audio_score"],
+                "motion_score": item["motion_score"]
             })
 
     return {
         "ok": True,
         "message": "VOD analysis complete",
+        "analysis_method": "audio_plus_visual_motion" if visual_available else "audio_only_fallback",
+        "visual_analysis_available": visual_available,
         "candidates_created": len(created),
         "clips": created
     }
