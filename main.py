@@ -1833,16 +1833,38 @@ def cinematic_render(project_id: str, asset_id: str = Form("")):
         if not Path(s["file_path"]).is_file():
             raise HTTPException(400, f"Missing source file: {s['filename']}")
     output = EXPORTS / f"cinematic_{project_id}.mp4"
-    command = ["ffmpeg", "-y", "-filter_threads", "2", "-filter_complex_threads", "2"]
-    for s in shots:
-        command += ["-i", s["file_path"]]
+    # Reuse one FFmpeg decoder for repeated shots from the same uploaded file.
+    # Opening the same high-resolution HEVC source once per shot can exhaust the
+    # small Railway container's memory. Split decoded frames into trim branches.
+    source_paths = list(dict.fromkeys(s["file_path"] for s in shots))
+    source_index = {path: idx for idx, path in enumerate(source_paths)}
+    shots_by_source = {
+        path: [i for i, shot in enumerate(shots) if shot["file_path"] == path]
+        for path in source_paths
+    }
+    command = ["ffmpeg", "-y", "-filter_threads", "1", "-filter_complex_threads", "1"]
+    for path in source_paths:
+        command += ["-i", path]
     filters = []
+    shot_source_labels = {}
+    for path, shot_indices in shots_by_source.items():
+        input_idx = source_index[path]
+        if len(shot_indices) > 1:
+            labels = [f"src{input_idx}_{n}" for n in range(len(shot_indices))]
+            filters.append(
+                f"[{input_idx}:v]split={len(shot_indices)}"
+                + "".join(f"[{label}]" for label in labels)
+            )
+            for shot_idx, label in zip(shot_indices, labels):
+                shot_source_labels[shot_idx] = f"[{label}]"
+        else:
+            shot_source_labels[shot_indices[0]] = f"[{input_idx}:v]"
+
     concat_inputs = []
     for i, s in enumerate(shots):
         dur = float(s["end_seconds"]) - float(s["start_seconds"])
         # Read the source's declared range so full-range iPhone/iPad HEVC
-        # (yuvj420p / color_range=pc) is converted deliberately to limited-range
-        # yuv420p for the H.264 delivery file. Unknown sources are left to auto.
+        # is converted deliberately to limited-range BT.709 output.
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=color_range",
@@ -1851,10 +1873,13 @@ def cinematic_render(project_id: str, asset_id: str = Form("")):
         )
         source_range = (probe.stdout.strip().lower() if probe.returncode == 0 else "")
         range_in = {"pc": "pc", "jpeg": "pc", "tv": "tv", "mpeg": "tv"}.get(source_range, "auto")
+        # Crop to the 9:16 source window before scaling. This avoids creating
+        # a huge 2560x1920 intermediate for a landscape 4:3 iPad recording.
         filters.append(
-            f"[{i}:v]trim=start={float(s['start_seconds']):.3f}:duration={dur:.3f},"
-            f"setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=increase:in_range={range_in}:out_range=tv,"
-            "crop=1080:1920,setsar=1,fps=30,format=yuv420p"
+            f"{shot_source_labels[i]}trim=start={float(s['start_seconds']):.3f}:duration={dur:.3f},"
+            f"setpts=PTS-STARTPTS,crop='ih*9/16:ih:(iw-ow)/2:0',"
+            f"scale=1080:1920:in_range={range_in}:out_range=tv,"
+            "setsar=1,fps=30,format=yuv420p"
             f"[v{i}]"
         )
         concat_inputs.append(f"[v{i}]")
