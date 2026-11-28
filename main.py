@@ -1151,11 +1151,21 @@ def render_clip(
         "crop=1080:1920,setsar=1,fps=30,format=yuv420p"
     )
 
-    command = [
-        "ffmpeg", "-y",
-        "-ss", str(seek_time),
-        "-i", input_path,
-    ]
+    # Keep fast input seeking for the multi-input overlay graph. For a
+    # plain clip, seek after opening the source so FFmpeg decodes accurately
+    # to the requested timestamp instead of relying on keyframe seeking.
+    if asset_id:
+        command = [
+            "ffmpeg", "-y",
+            "-ss", str(seek_time),
+            "-i", input_path,
+        ]
+    else:
+        command = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-ss", str(seek_time),
+        ]
 
     if asset_id:
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
@@ -1212,7 +1222,7 @@ def render_clip(
     if result.returncode != 0:
         raise HTTPException(
             500,
-            "FFmpeg render failed: " + result.stderr[-1200:]
+            "FFmpeg render failed (last diagnostic output): " + result.stderr[-5000:]
         )
 
     with conn() as c:
