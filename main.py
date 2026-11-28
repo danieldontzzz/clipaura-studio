@@ -1064,13 +1064,99 @@ async def upload_clip(clip_id: str, video: UploadFile = File(...)):
     return {"ok": True, "filename": path.name}
 
 
+
+
+def detect_facecam_region(video_path: str, seek_time: float, duration: float):
+    """Sample frames and find a face consistently located in one screen corner."""
+    try:
+        import cv2
+    except ImportError:
+        raise HTTPException(503, "Facecam detection is unavailable until OpenCV is installed.")
+    cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+    detector = cv2.CascadeClassifier(cascade_path)
+    if detector.empty():
+        raise HTTPException(503, "Face detector could not be loaded.")
+    votes = {"top_left": [], "top_right": [], "bottom_left": [], "bottom_right": []}
+    samples = sorted(set([0.5, max(0.5, duration * 0.25), max(0.5, duration * 0.5), max(0.5, duration * 0.75)]))
+    for offset in samples:
+        at = max(0, seek_time + min(offset, max(0, duration - 0.2)))
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(at), "-i", video_path, "-frames:v", "1", "-vf", "scale=960:-1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+            capture_output=True, timeout=30
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            continue
+        frame = cv2.imdecode(bytearray(proc.stdout), cv2.IMREAD_GRAYSCALE)
+        if frame is None:
+            continue
+        height, width = frame.shape[:2]
+        faces = detector.detectMultiScale(frame, scaleFactor=1.1, minNeighbors=5, minSize=(36, 36))
+        for x, y, w, h in faces:
+            cx, cy = x + w / 2, y + h / 2
+            if cx < width * 0.48 and cy < height * 0.48:
+                corner = "top_left"
+            elif cx > width * 0.52 and cy < height * 0.48:
+                corner = "top_right"
+            elif cx < width * 0.48 and cy > height * 0.52:
+                corner = "bottom_left"
+            elif cx > width * 0.52 and cy > height * 0.52:
+                corner = "bottom_right"
+            else:
+                continue
+            votes[corner].append(float(w * h))
+    ranked = sorted(((len(v), sum(v), k) for k, v in votes.items()), reverse=True)
+    count, area, corner = ranked[0]
+    total = sum(len(v) for v in votes.values())
+    if count < 2 or total == 0:
+        return {"detected": False, "confidence": 0, "message": "No consistent facecam was detected. Choose a corner manually or use Full frame."}
+    confidence = round(min(0.99, (count / max(1, len(samples))) * 0.65 + (area / max(1, sum(sum(v) for v in votes.values()))) * 0.35), 2)
+    return {"detected": True, "position": corner, "confidence": confidence, "samples_with_face": count, "samples_checked": len(samples)}
+
+
+def facecam_stack_filter(position: str):
+    # Facecam crop is the selected 45% corner region; gameplay remains the full source.
+    crops = {
+        "top_left": "crop=iw*0.45:ih*0.45:0:0",
+        "top_right": "crop=iw*0.45:ih*0.45:iw*0.55:0",
+        "bottom_left": "crop=iw*0.45:ih*0.45:0:ih*0.55",
+        "bottom_right": "crop=iw*0.45:ih*0.45:iw*0.55:ih*0.55",
+    }
+    face_crop = crops[position]
+    return (
+        f"[0:v]split=2[game][cam];"
+        f"[game]scale=1080:1152:force_original_aspect_ratio=increase,crop=1080:1152,setsar=1[gameout];"
+        f"[cam]{face_crop},scale=1080:768:force_original_aspect_ratio=increase,crop=1080:768,setsar=1[camout];"
+        f"[camout][gameout]vstack=inputs=2,fps=30,format=yuv420p[v]"
+    )
+
+
+@app.post("/api/clips/{clip_id}/detect-facecam")
+def detect_facecam(clip_id: str):
+    with conn() as c:
+        clip = c.execute("""SELECT clips.*, jobs.vod_path FROM clips JOIN jobs ON jobs.id=clips.job_id WHERE clips.id=?""", (clip_id,)).fetchone()
+    if not clip:
+        raise HTTPException(404, "Clip not found")
+    if clip["file_path"] and Path(clip["file_path"]).is_file():
+        path, seek = clip["file_path"], 0.0
+        duration = float(clip["duration"] or 18)
+    elif clip["vod_path"] and Path(clip["vod_path"]).is_file():
+        path = clip["vod_path"]
+        seek = float(clip["start_seconds"] or 0)
+        duration = float(clip["duration"] or 18)
+    else:
+        raise HTTPException(400, "Original video is missing")
+    result = detect_facecam_region(path, seek, duration)
+    return result
+
+
 @app.post("/api/clips/{clip_id}/render")
 def render_clip(
     clip_id: str,
     start: float = Form(0),
     end: float = Form(18),
     layout: str = Form("full_frame"),
-    asset_id: str = Form("")
+    asset_id: str = Form(""),
+    facecam_position: str = Form("auto")
 ):
     with conn() as c:
         clip = c.execute("""
@@ -1092,7 +1178,7 @@ def render_clip(
     if start < 0 or end <= start or end - start > 90:
         raise HTTPException(400, "Choose a valid range up to 90 seconds")
 
-    if layout not in {"full_frame", "stacked_source"}:
+    if layout not in {"full_frame", "stacked_source", "facecam_stack"}:
         raise HTTPException(400, "Unsupported layout")
 
     vod_path = clip["vod_path"] or ""
@@ -1144,6 +1230,14 @@ def render_clip(
             "The original VOD or uploaded video is missing"
         )
 
+    if layout == "facecam_stack":
+        if facecam_position == "auto":
+            detection = detect_facecam_region(input_path, seek_time, end - start)
+            if not detection.get("detected"):
+                raise HTTPException(422, detection.get("message", "Facecam not detected."))
+            facecam_position = detection["position"]
+        if facecam_position not in {"top_left", "top_right", "bottom_left", "bottom_right"}:
+            raise HTTPException(400, "Choose a valid facecam corner.")
     output = EXPORTS / f"{clip_id}_clipaura.mp4"
 
     video_filter = (
@@ -1171,6 +1265,9 @@ def render_clip(
             "-ss", str(seek_time),
         ]
 
+    if layout == "facecam_stack" and asset_id:
+        raise HTTPException(400, "Campaign overlay is temporarily unavailable with facecam-stack layout; render the stack first.")
+
     if asset_id:
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", asset_id):
             raise HTTPException(400, "Invalid overlay asset.")
@@ -1193,6 +1290,8 @@ def render_clip(
             "format=yuv420p[v]",
             "-map", "[v]", "-map", "0:a?",
         ])
+    elif layout == "facecam_stack":
+        command.extend(["-t", str(end - start), "-filter_complex", facecam_stack_filter(facecam_position), "-map", "[v]", "-map", "0:a?"])
     else:
         command.extend([
             "-t", str(end - start),
