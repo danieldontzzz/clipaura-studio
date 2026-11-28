@@ -1127,7 +1127,7 @@ async def upload_clip(clip_id: str, video: UploadFile = File(...)):
 
 
 def detect_facecam_region(video_path: str, seek_time: float, duration: float):
-    """Detect a stable facecam region from face boxes across sampled video frames."""
+    """Detect a repeatable face location across sampled frames; never count multiple faces in one frame as multiple votes."""
     try:
         import cv2
         import numpy as np
@@ -1139,16 +1139,22 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
     if detector.empty():
         raise HTTPException(503, "Face detector could not be loaded.")
 
-    samples = sorted(set([0.5, max(0.5, duration * 0.2), max(0.5, duration * 0.4),
-                          max(0.5, duration * 0.6), max(0.5, duration * 0.8)]))
+    # Seven evenly distributed samples reduce the chance that a game cut or one
+    # false positive determines the webcam corner.
+    sample_fractions = (0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.92)
+    sample_span = max(0.0, float(duration))
+    samples = [round(min(max(0.15, sample_span * fraction), max(0.15, sample_span - 0.15)), 2)
+               for fraction in sample_fractions]
+    samples = sorted(set(samples))
     frame_reports = []
-    detections = []
+    frame_winners = []
     frames_read = 0
 
     for offset in samples:
         at = max(0, seek_time + min(offset, max(0, duration - 0.2)))
         report = {"offset_seconds": round(offset, 2), "source_seconds": round(at, 2),
-                  "frame_read": False, "frame_size": None, "faces": []}
+                  "frame_read": False, "frame_size": None, "faces": [],
+                  "selected_corner": None}
         try:
             proc = subprocess.run(
                 ["ffmpeg", "-v", "error", "-ss", str(at), "-i", video_path,
@@ -1178,9 +1184,10 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
         report["frame_size"] = {"width": int(width), "height": int(height)}
         enhanced = cv2.equalizeHist(frame)
         faces = detector.detectMultiScale(
-            enhanced, scaleFactor=1.08, minNeighbors=4, minSize=(36, 36)
+            enhanced, scaleFactor=1.08, minNeighbors=5, minSize=(36, 36)
         )
 
+        corner_candidates = {k: [] for k in ("top_left", "top_right", "bottom_left", "bottom_right")}
         for x, y, w, h in faces:
             cx, cy = x + w / 2, y + h / 2
             if cx < width * 0.48 and cy < height * 0.48:
@@ -1203,58 +1210,74 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
                 "center": {"x": round(float(cx), 1), "y": round(float(cy), 1)},
                 "corner": corner
             })
-            if corner != "center":
-                detections.append(face)
+            if corner in corner_candidates:
+                corner_candidates[corner].append(face)
+
+        # One vote per frame. Within each corner, retain the largest face box;
+        # this prevents a frame with several detections from dominating the result.
+        frame_options = []
+        for corner, candidates in corner_candidates.items():
+            if candidates:
+                chosen = max(candidates, key=lambda item: item["width"] * item["height"])
+                frame_options.append((chosen["width"] * chosen["height"], corner, chosen))
+        if frame_options:
+            _, winner_corner, winner_face = max(frame_options, key=lambda item: item[0])
+            frame_winners.append(winner_face)
+            report["selected_corner"] = winner_corner
         frame_reports.append(report)
 
-    corner_counts = {k: sum(1 for d in detections if d["corner"] == k)
+    corner_counts = {k: sum(1 for d in frame_winners if d["corner"] == k)
                      for k in ("top_left", "top_right", "bottom_left", "bottom_right")}
     ranked = sorted(corner_counts.items(), key=lambda item: item[1], reverse=True)
     best_corner, best_count = ranked[0] if ranked else ("", 0)
-    selected = [d for d in detections if d["corner"] == best_corner]
+    selected = [d for d in frame_winners if d["corner"] == best_corner]
+    face_detection_count = sum(len(item["faces"]) for item in frame_reports)
+    required_votes = max(3, int(math.ceil(frames_read * 0.40)))
+    vote_share = best_count / max(1, len(frame_winners))
 
     diagnostics = {
         "frames_requested": len(samples),
         "frames_read": frames_read,
-        "face_detections": len(detections),
+        "frames_with_face": len(frame_winners),
+        "face_detections": face_detection_count,
         "corner_votes": corner_counts,
+        "required_votes": required_votes,
+        "winner_vote_share": round(vote_share, 3),
         "samples": frame_reports
     }
-    if frames_read == 0 or best_count < 2:
+    if frames_read == 0 or best_count < required_votes or vote_share < 0.40:
         return {
             "detected": False, "confidence": 0,
-            "message": "No stable facecam was detected. Try a clip with a clearer, larger webcam view.",
+            "message": "No sufficiently consistent facecam location was found. Try a section where the webcam is visible throughout.",
             "diagnostics": diagnostics
         }
 
-    # Use the median face box to reduce false detections and movement between frames.
+    # Median face geometry from one winning face per frame makes the estimate
+    # less sensitive to brief movement and duplicate detections.
     med = lambda key: float(np.median([d[key] for d in selected]))
     frame_width = selected[0]["frame_width"]
     frame_height = selected[0]["frame_height"]
     face_cx, face_cy = med("center_x"), med("center_y")
     face_w, face_h = med("width"), med("height")
 
-    # Estimate a webcam window around the face. Keep it inside the detected corner.
     roi_w = min(0.48, max(0.18, (face_w * 3.2) / frame_width))
     roi_h = min(0.48, max(0.18, (face_h * 3.0) / frame_height))
     if best_corner.endswith("left"):
         roi_x = min(max(0.0, (face_cx / frame_width) - roi_w * 0.50), 0.48 - roi_w)
     else:
-        roi_x = max(0.52, (face_cx / frame_width) - roi_w * 0.50)
-        roi_x = min(roi_x, 1.0 - roi_w)
+        roi_x = min(max(0.52, (face_cx / frame_width) - roi_w * 0.50), 1.0 - roi_w)
     if best_corner.startswith("top"):
         roi_y = min(max(0.0, (face_cy / frame_height) - roi_h * 0.50), 0.48 - roi_h)
     else:
-        roi_y = max(0.52, (face_cy / frame_height) - roi_h * 0.50)
-        roi_y = min(roi_y, 1.0 - roi_h)
+        roi_y = min(max(0.52, (face_cy / frame_height) - roi_h * 0.50), 1.0 - roi_h)
 
-    confidence = round(min(0.95, 0.45 + 0.45 * (best_count / max(1, len(detections))) +
-                           0.10 * (best_count / max(1, frames_read))), 2)
+    consistency = best_count / max(1, frames_read)
+    confidence = round(min(0.94, 0.50 + 0.44 * consistency), 2)
     webcam_region = {
         "x": round(roi_x, 4), "y": round(roi_y, 4),
         "width": round(roi_w, 4), "height": round(roi_h, 4),
         "coordinate_space": "normalized_0_to_1",
-        "estimated_from": "median_face_box"
+        "estimated_from": "median_face_box_across_frame_votes"
     }
     diagnostics["selected_face_median"] = {
         "center_x": round(face_cx, 1), "center_y": round(face_cy, 1),
@@ -1264,11 +1287,9 @@ def detect_facecam_region(video_path: str, seek_time: float, duration: float):
 
     return {
         "detected": True, "position": best_corner, "confidence": confidence,
-        "samples_with_face": len(set(round(d["center_x"], 0) for d in selected)),
-        "samples_checked": frames_read, "webcam_region": webcam_region,
-        "diagnostics": diagnostics
+        "samples_with_face": len(selected), "samples_checked": frames_read,
+        "webcam_region": webcam_region, "diagnostics": diagnostics
     }
-
 
 def facecam_stack_filter(position: str, webcam_region=None):
     # Prefer the estimated webcam rectangle; retain corner fallback for manual selection.
