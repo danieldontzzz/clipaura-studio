@@ -137,6 +137,9 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
    <div class="actions"><button class="primary" type="submit">ADD MANUAL CANDIDATE</button></div>
   </form>
   <hr>
+  <label>VERTICAL VIDEO LAYOUT</label>
+  <select id="renderLayoutSelect"><option value="facecam_stack" selected>Facecam top 40% - Gameplay bottom 60%</option><option value="full_frame">Full-frame vertical crop</option></select>
+  <label>FACECAM POSITION</label><select id="facecamPositionSelect"><option value="auto" selected>Auto-detect each video</option><option value="top_left">Top left</option><option value="top_right">Top right</option><option value="bottom_left">Bottom left</option><option value="bottom_right">Bottom right</option></select>
   <label>OPTIONAL FULL-VIDEO IMAGE OVERLAY</label>
   <select id="renderOverlaySelect"><option value="">No overlay</option></select>
   <p class="muted">Choose a stored transparent campaign logo to place it on every frame, lower-middle.</p>
@@ -423,7 +426,7 @@ async function loadClips(){
    ${clip.status==='approved'?`
     <p class="muted">${clip.vod_path?'Ready to extract from this original VOD.':'Original VOD unavailable.'}</p>
     <div class="actions">
-     <button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button>
+     <button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>DETECT FACECAM</button><button class="primary" data-action="render" data-id="${esc(clip.id)}" ${!clip.vod_path&&!clip.file_path?'disabled':''}>RENDER VERTICAL MP4</button>
     </div>`:''}
   </div>`;
  }).join('')||'No clips for this VOD yet. Select another VOD or analyse this one.';
