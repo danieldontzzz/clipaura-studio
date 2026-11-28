@@ -494,6 +494,11 @@ async function reject(id){
  try{await api(`/api/clips/${id}/reject`,{method:'POST'});await loadClips();message('Candidate rejected.')}
  catch(error){message(error.message)}
 }
+async function detectFacecam(id){
+ const button=document.querySelector('[data-action=detect][data-id="'+id+'"]');
+ if(button){button.disabled=true;button.textContent='SCANNING...'}
+ try{const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'});if(r.detected){$('#facecamPositionSelect').value=r.position;message('Facecam: '+r.position+' ('+Math.round(r.confidence*100)+'% confidence).')}else{message(r.message||'No facecam found. Select a corner manually.')}}catch(e){message(e.message)}finally{if(button){button.disabled=false;button.textContent='DETECT FACECAM'}}
+}
 async function renderClip(id){
  const clip=clips.find(c=>c.id===id);
  if(!clip)return;
@@ -502,6 +507,9 @@ async function renderClip(id){
  data.append('start','0');
  data.append('end',String(duration));
  const overlay=$('#renderOverlaySelect')?.value||'';
+ const layout=$('#renderLayoutSelect')?.value||'facecam_stack';
+ const facecamPosition=$('#facecamPositionSelect')?.value||'auto';
+ data.append('layout',layout);data.append('facecam_position',facecamPosition);
  if(overlay)data.append('asset_id',overlay);
  message('Extracting this moment from the original VOD and rendering vertical MP4...');
  try{
@@ -532,6 +540,7 @@ document.addEventListener('click',async event=>{
  if(action==='approve')await approve(id);
  if(action==='reject')await reject(id);
  if(action==='render')await renderClip(id);
+ if(action==='detect')await detectFacecam(id);
  if(action==='copy')copyLink(button.dataset.url);
  if(action==='clips')openClips(id);
  if(action==='review')switchTab('review');
