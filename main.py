@@ -232,17 +232,16 @@ def health():
 
 @app.get("/api/google/config")
 def google_picker_config():
-    values = {
-        "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
-        "api_key": os.environ.get("GOOGLE_API_KEY", ""),
-        "project_number": os.environ.get("GOOGLE_PROJECT_NUMBER", "")
+    # Safe diagnostics: report presence only; never return secret/config values.
+    required = {
+        "GOOGLE_CLIENT_ID": os.environ.get("GOOGLE_CLIENT_ID", "").strip(),
+        "GOOGLE_API_KEY": os.environ.get("GOOGLE_API_KEY", "").strip(),
+        "GOOGLE_PROJECT_NUMBER": os.environ.get("GOOGLE_PROJECT_NUMBER", "").strip(),
     }
-    if not all(values.values()):
-        raise HTTPException(
-            503,
-            "Google Drive is not configured yet. Add GOOGLE_CLIENT_ID, GOOGLE_API_KEY and GOOGLE_PROJECT_NUMBER in Railway Variables."
-        )
-    return values
+    return {
+        "configured": all(required.values()),
+        "variables": {name: bool(value) for name, value in required.items()},
+    }
 
 
 @app.post("/api/drive/import")
