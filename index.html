@@ -463,9 +463,9 @@ async function loadClips(){
     </div>
     <div class="facecam-preview hidden" id="facecamPreview-${esc(clip.id)}" style="margin-top:12px;padding:12px;border:1px solid #7136a5;border-radius:12px;background:#0b0712">
      <b style="display:block;margin-bottom:8px">FACECAM AREA CHECK</b>
-     <p class="muted" style="margin:0 0 9px">Green box = estimated webcam crop. Check that it surrounds the streamer, not gameplay.</p>
+     <p class="muted preview-status" style="margin:0 0 9px">Loading the video frame and estimated crop...</p>
      <img alt="Video frame with estimated facecam crop outlined" style="display:block;width:100%;height:auto;border-radius:8px;background:#090611">
-     <p class="muted" style="margin:9px 0 0">If the box is wrong, choose the correct corner above before rendering.</p>
+     <p class="muted" style="margin:9px 0 0">Green rectangle = estimated webcam crop. If it surrounds gameplay instead of the streamer, choose another corner above. Do not render until this looks correct.</p>
     </div>`:''}
   </div>`;
  }).join('')||'No clips for this VOD yet. Select another VOD or analyse this one.';
@@ -538,27 +538,40 @@ async function detectFacecam(id){
   if(button){button.disabled=true;button.textContent='SCANNING...'}
   try{
    const r=await api('/api/clips/'+id+'/detect-facecam',{method:'POST'});
-   if(r.detected){
-    $('#facecamPositionSelect').value=r.position;
-    const region=r.webcam_region;
-    const preview=document.getElementById('facecamPreview-'+id);
-    if(region&&preview){
-     const params=new URLSearchParams({x:region.x,y:region.y,width:region.width,height:region.height});
-     const img=preview.querySelector('img');
-     img.src='/api/clips/'+encodeURIComponent(id)+'/facecam-preview?'+params.toString()+'&v='+Date.now();
-     preview.classList.remove('hidden');
-    }
-   }
    const d=r.diagnostics||{};
    const summary='Facecam scan: '+(r.detected?(r.position+' · '+Math.round(r.confidence*100)+'% confidence'):'not detected')+
-    '\nFrames read: '+(d.frames_read??'?')+'/'+(d.frames_requested??'?')+
-    '\nFaces found: '+(d.face_detections??'?')+
-    '\nCorner votes: '+JSON.stringify(d.corner_votes||{});
+    ' · '+(d.frames_with_face??0)+' of '+(d.frames_read??0)+' frames contained faces';
    const report=JSON.stringify({result:r.detected?'detected':'not_detected',position:r.position||null,confidence:r.confidence||0,diagnostics:d},null,2);
-   try{await navigator.clipboard.writeText(report);message(summary+(r.detected?'\nFacecam preview shown below the approved clip.':'')+'\nFull diagnostic report copied.')}
-   catch(copyError){prompt('Copy this facecam diagnostic report and paste it into chat:',report);message(summary)}
-  }catch(e){message(e.message)}
-  finally{if(button){button.disabled=false;button.textContent='DETECT FACECAM'}}
+   if(r.detected&&r.webcam_region){
+    $('#facecamPositionSelect').value=r.position;
+    const preview=document.getElementById('facecamPreview-'+id);
+    if(preview){
+     const status=preview.querySelector('.preview-status');
+     const img=preview.querySelector('img');
+     preview.classList.remove('hidden');
+     status.textContent=summary+' · Drawing the estimated crop...';
+     img.onload=()=>{
+      status.textContent=summary+' · Preview ready. Check the green rectangle before rendering.';
+      preview.scrollIntoView({behavior:'smooth',block:'center'});
+     };
+     img.onerror=()=>{
+      status.textContent='The detector worked, but the preview frame could not load. Please do not render yet.';
+      preview.scrollIntoView({behavior:'smooth',block:'center'});
+     };
+     const params=new URLSearchParams({x:r.webcam_region.x,y:r.webcam_region.y,width:r.webcam_region.width,height:r.webcam_region.height});
+     img.src='/api/clips/'+encodeURIComponent(id)+'/facecam-preview?'+params.toString()+'&v='+Date.now();
+    }else{
+     message(summary+' · Preview panel was not found. Refresh the page after deployment.');
+    }
+   }else{
+    message(summary+' · No reliable facecam crop found. Try a segment where the webcam stays visible.');
+   }
+   if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>{});
+  }catch(e){
+   message('Facecam detection or preview failed: '+e.message);
+  }finally{
+   if(button){button.disabled=false;button.textContent='DETECT FACECAM'}
+  }
  }
 async function renderClip(id){
  const clip=clips.find(c=>c.id===id);
