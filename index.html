@@ -227,7 +227,7 @@ async function openGoogleDrivePicker(){
       .setOAuthToken(googleAccessToken)
       .setOrigin(window.location.protocol+'//'+window.location.host)
       .setTitle('Choose a video to import into ClipAura')
-      .setMimeTypes('video/*')
+      .addView(new google.picker.DocsView(google.picker.ViewId.DOCS).setMimeTypes('video/*'))
       .setCallback(async data=>{
        if(data.action===google.picker.Action.PICKED){
         const picked=data.docs?.[0];
