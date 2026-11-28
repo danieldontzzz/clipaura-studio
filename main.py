@@ -1293,6 +1293,7 @@ def facecam_stack_filter(position: str, webcam_region=None):
         f"[camout][gameout]vstack=inputs=2,fps=30,format=yuv420p[v]"
     )
 
+@app.post("/api/clips/{clip_id}/detect-facecam")
 def detect_facecam(clip_id: str):
     try:
         with conn() as c:
