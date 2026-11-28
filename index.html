@@ -82,6 +82,11 @@ footer{text-align:center;color:#766987;font-size:10px;padding:28px}
 <section id="queue">
  <div class="panel">
   <h2>＋ Add a creator VOD</h2>
+  <div class="note" style="margin:12px 0">
+   <b>Import a video from Google Drive</b><br>
+   Choose only the video you want ClipAura to process. Your other Drive files are not browsed.
+   <div class="actions"><button id="googleDriveImport" class="primary" type="button">☁ CHOOSE FROM GOOGLE DRIVE</button></div>
+  </div>
   <form id="jobForm">
    <div class="grid">
     <div><label>CREATOR NAME</label><input name="creator" placeholder="Creator name..." required></div>
@@ -180,6 +185,83 @@ function switchTab(tab){
  if(tab==='review'||tab==='exports')loadClips();
 }
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
+
+let googlePickerReady=false;
+let googlePickerConfig=null;
+let googleTokenClient=null;
+let googleAccessToken="";
+
+function loadGoogleScripts(){
+ return new Promise((resolve,reject)=>{
+  if(window.google?.accounts?.oauth2&&window.gapi){resolve();return}
+  let pending=0;
+  const done=()=>{pending++;if(pending===2)resolve()};
+  const fail=()=>reject(new Error("Google sign-in libraries could not load. Check your connection and refresh."));
+  const gis=document.createElement("script");
+  gis.src="https://accounts.google.com/gsi/client";gis.async=true;gis.defer=true;gis.onload=done;gis.onerror=fail;
+  const gapi=document.createElement("script");
+  gapi.src="https://apis.google.com/js/api.js";gapi.async=true;gapi.defer=true;gapi.onload=done;gapi.onerror=fail;
+  document.head.append(gis,gapi);
+ });
+}
+
+async function openGoogleDrivePicker(){
+ const button=$('#googleDriveImport');
+ button.disabled=true;button.textContent='CONNECTING TO GOOGLE...';
+ try{
+  googlePickerConfig=await api('/api/google/config');
+  await loadGoogleScripts();
+  googleTokenClient=google.accounts.oauth2.initTokenClient({
+   client_id:googlePickerConfig.client_id,
+   scope:'https://www.googleapis.com/auth/drive.file',
+   callback:async tokenResponse=>{
+    if(tokenResponse.error){message('Google sign-in failed: '+tokenResponse.error);button.disabled=false;button.textContent='☁ CHOOSE FROM GOOGLE DRIVE';return}
+    googleAccessToken=tokenResponse.access_token;
+    try{
+     await new Promise((resolve,reject)=>{
+      gapi.load('picker',{callback:resolve,onerror:()=>reject(new Error('Google Picker could not load.'))});
+     });
+     const picker=new google.picker.PickerBuilder()
+      .setAppId(String(googlePickerConfig.project_number))
+      .setDeveloperKey(googlePickerConfig.api_key)
+      .setOAuthToken(googleAccessToken)
+      .setOrigin(window.location.protocol+'//'+window.location.host)
+      .setTitle('Choose a video to import into ClipAura')
+      .setMimeTypes('video/*')
+      .setCallback(async data=>{
+       if(data.action===google.picker.Action.PICKED){
+        const picked=data.docs?.[0];
+        if(!picked?.id){message('Google did not return a selected file.');return}
+        button.disabled=true;button.textContent='IMPORTING VIDEO...';
+        message('Importing '+(picked.name||'your video')+' from Google Drive. Keep this page open.');
+        try{
+         const result=await api('/api/drive/import',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+googleAccessToken},
+          body:JSON.stringify({file_id:picked.id})
+         });
+         await loadJobs();
+         message('Imported '+result.filename+' into your VOD Vault. It is ready to analyse.');
+        }catch(error){message('Google Drive import failed: '+error.message)}
+        finally{button.disabled=false;button.textContent='☁ CHOOSE FROM GOOGLE DRIVE'}
+       }else if(data.action===google.picker.Action.CANCEL){
+        button.disabled=false;button.textContent='☁ CHOOSE FROM GOOGLE DRIVE';
+       }
+      })
+      .build();
+     picker.setVisible(true);
+     button.disabled=false;button.textContent='☁ CHOOSE FROM GOOGLE DRIVE';
+    }catch(error){message(error.message);button.disabled=false;button.textContent='☁ CHOOSE FROM GOOGLE DRIVE'}
+   }
+  });
+  googleTokenClient.requestAccessToken({prompt:''});
+ }catch(error){
+  message('Google Drive setup error: '+error.message);
+  button.disabled=false;button.textContent='☁ CHOOSE FROM GOOGLE DRIVE';
+ }
+}
+
+$('#googleDriveImport').addEventListener('click',openGoogleDrivePicker);
 
 async function loadJobs(){
  jobs=await api('/api/jobs');
