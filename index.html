@@ -215,7 +215,7 @@ function timecode(value){
 
 function switchTab(tab){
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
- ['queue','review','exports','assets'].forEach(name=>$('#'+name).classList.toggle('hidden',name!==tab));
+ ['queue','review','exports','assets','storage'].forEach(name=>$('#'+name).classList.toggle('hidden',name!==tab));
  if(tab==='review'||tab==='exports')loadClips();
  if(tab==='assets')loadAssets();
   if(tab==='storage')loadStorage();
