@@ -515,11 +515,13 @@ async function downloadVod(id){
 async function analyseVod(id){
  const button=document.querySelector(`[data-action="analyse"][data-id="${id}"]`);
  if(button){button.disabled=true;button.textContent='ANALYSING...'}
- message('Analysing the VOD. Keep the app open.');
+ message('Analysing audio and visual activity. Keep the app open.');
  try{
   const result=await api(`/api/jobs/${id}/analyse`,{method:'POST'});
-$('#jobSelect').value=id;
-await loadClips();
+  $('#jobSelect').value=id;
+  await loadClips();
+  const method=result.visual_analysis_available?'audio + visual movement':'audio only (visual scan unavailable)';
+  message('Analysis complete: '+result.candidates_created+' candidate moments ranked using '+method+'. Review the timestamps and reasons in CLIP REVIEW.');
  }catch(error){message('Analysis failed: '+error.message)}
  finally{if(button){button.disabled=false;button.textContent='⚡ ANALYSE VOD'}}
 }
